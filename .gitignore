@@ -10,6 +10,8 @@ mesa_work/*/star
 mesa_work/*/restart_photo
 mesa_work/*/.mesa_temp_cache/
 mesa_work/*/final.mod
+mesa_work/*/ready.mod
+mesa_work/*/run.log
 
 # Julia
 NovaMessengers/Manifest.toml

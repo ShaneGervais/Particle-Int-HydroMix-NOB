@@ -48,3 +48,46 @@ end
     @test propertynames(df) == [:model_number, :priority, :profile_number]
     @test all(df.model_number .> 0)
 end
+
+@testset "NuclearDecay.MESSENGER_ISOTOPES" begin
+    expected = Set((:n13, :o14, :o15, :f17, :f18, :ne18, :ne19))
+    @test Set(keys(MESSENGER_ISOTOPES)) == expected
+    @test all(iso.mode == Symbol("beta+") for iso in values(MESSENGER_ISOTOPES))
+
+    # spot-check against ~/mesa-25.12.1/data/rates_data/weak_info.list values
+    @test MESSENGER_ISOTOPES[:n13].halflife_s ≈ 597.9
+    @test MESSENGER_ISOTOPES[:n13].daughter == :c13
+    @test MESSENGER_ISOTOPES[:f18].halflife_s ≈ 7109.281
+    @test MESSENGER_ISOTOPES[:ne18].halflife_s ≈ 1.733107
+
+    @test decay_constant(MESSENGER_ISOTOPES[:n13]) ≈ log(2) / 597.9
+end
+
+@testset "NuclearDecay.mass_number" begin
+    @test mass_number(:f18) == 18
+    @test mass_number(:n13) == 13
+    @test mass_number(:ne19) == 19
+    @test_throws ErrorException mass_number(:notanisotope)
+end
+
+@testset "MessengerProduction._finite_diff_production (analytic)" begin
+    import NovaMessengers.MessengerProduction: _finite_diff_production
+
+    # pure decay, no production: N(t) = N0*exp(-lambda*t) exactly satisfies
+    # dN/dt = -lambda*N, so the reconstructed "production" should be ~0
+    # (up to the finite-difference scheme's O((lambda*dt)^2) discretization
+    # error -- keep lambda*dt small so that error is negligible).
+    lambda = 0.01
+    age = collect(0.0:0.01:500.0)
+    N = 1.0e10 .* exp.(-lambda .* age)
+    r = _finite_diff_production(age, N, lambda)
+    @test all(abs.(r.rate) .< 1.0e-4 .* lambda .* maximum(N))
+
+    # constant production P0 into a decaying species reaches the analytic
+    # solution N(t) = (P0/lambda)*(1 - exp(-lambda*t)); reconstructed
+    # production should recover P0 away from the coarse-step start.
+    P0 = 5.0e6
+    N2 = (P0 / lambda) .* (1 .- exp.(-lambda .* age))
+    r2 = _finite_diff_production(age, N2, lambda)
+    @test all(isapprox.(r2.rate[5:end], P0; rtol=1e-2))
+end

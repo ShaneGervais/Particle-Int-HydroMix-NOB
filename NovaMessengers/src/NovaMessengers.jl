@@ -17,4 +17,10 @@ export MessengerProduction
 export isotope_number, production_rate, positron_rate, neutrino_energy_loss_rate,
        annihilation_photon_rate, ne18_production_rate
 
+include("Transport.jl")
+using .Transport
+export Transport
+export ELECTRON_REST_ENERGY_MEV, escape_probability_neutrino, klein_nishina_factor,
+       compton_opacity, optical_depth_gamma, escape_probability_gamma
+
 end # module NovaMessengers

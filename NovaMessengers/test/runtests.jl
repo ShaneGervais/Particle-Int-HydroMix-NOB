@@ -91,3 +91,65 @@ end
     r2 = _finite_diff_production(age, N2, lambda)
     @test all(isapprox.(r2.rate[5:end], P0; rtol=1e-2))
 end
+
+@testset "Transport.escape_probability_neutrino" begin
+    @test escape_probability_neutrino() == 1.0
+    @test escape_probability_neutrino(1, 2, 3; foo="bar") == 1.0
+end
+
+@testset "Transport.klein_nishina_factor" begin
+    # Thomson limit: KN factor -> 1 as E -> 0
+    @test isapprox(klein_nishina_factor(1e-6), 1.0; atol=1e-4)
+    # falls off with energy, always <= 1 in this regime
+    @test klein_nishina_factor(0.511) < 1.0
+    @test klein_nishina_factor(1.275) < klein_nishina_factor(0.511)
+    @test klein_nishina_factor(1.809) < klein_nishina_factor(1.275)
+    @test_throws ErrorException klein_nishina_factor(0.0)
+    @test_throws ErrorException klein_nishina_factor(-1.0)
+end
+
+@testset "Transport.compton_opacity" begin
+    # pure helium (X=0) vs pure hydrogen (X=1) at fixed energy: Thomson
+    # scaling kappa = 0.2*(1+X) cm^2/g
+    E = 0.511
+    kn = klein_nishina_factor(E)
+    @test compton_opacity(0.0, E) ≈ 0.2 * kn
+    @test compton_opacity(1.0, E) ≈ 0.4 * kn
+    @test compton_opacity(0.7, E) ≈ 0.2 * 1.7 * kn
+end
+
+@testset "Transport.optical_depth_gamma / escape_probability_gamma (synthetic)" begin
+    # constant-density shell, radius decreasing linearly from surface (zone 1)
+    # to center (zone nz), so tau accumulates by a known amount per zone.
+    nz = 101
+    r_rsun = collect(range(1.0, 0.0; length=nz))
+    rho = fill(1.0, nz)  # g/cm^3
+    x_h1 = fill(0.7, nz)
+    df = DataFrame(radius=r_rsun, logRho=log10.(rho), x_mass_fraction_H=x_h1)
+    rsun_cm = 6.957e10
+
+    tau = optical_depth_gamma(df, 0.511; rsun_cm=rsun_cm)
+    @test tau[1] == 0.0
+    @test issorted(tau)  # monotonically non-decreasing from surface inward
+    @test all(tau[2:end] .> 0)
+
+    # analytic check: uniform rho*kappa over the full shell thickness
+    kappa = compton_opacity(0.7, 0.511)
+    expected_total_tau = kappa * rho[1] * (r_rsun[1] - r_rsun[end]) * rsun_cm
+    @test isapprox(tau[end], expected_total_tau; rtol=1e-6)
+
+    esc = escape_probability_gamma(df, 0.511; rsun_cm=rsun_cm)
+    @test esc[1] == 1.0
+    @test issorted(esc; rev=true)  # monotonically non-increasing inward
+    @test all(0.0 .<= esc .<= 1.0)
+    @test esc ≈ exp.(-tau)
+end
+
+@testset "Transport.escape_probability_gamma (MesaRun, real data)" begin
+    prof = read_profile(joinpath(DATA, "profile_sample.data")).data
+    rsun_cm = 6.957e10
+    esc = escape_probability_gamma(prof, 0.511; rsun_cm=rsun_cm)
+    @test length(esc) == nrow(prof)
+    @test all(0.0 .<= esc .<= 1.0)
+    @test esc[1] == 1.0  # surface zone always fully transparent to itself
+end

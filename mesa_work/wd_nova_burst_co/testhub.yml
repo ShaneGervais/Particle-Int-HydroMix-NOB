@@ -1,0 +1,48 @@
+    - inlist: inlist_setup_header
+      runtime_minutes:   0.10
+      model_number:           11
+      star_age:     1.0000000000000000E+07
+      num_retries:            1
+      log_rel_run_E_err:        -2.0804518883152472
+      steps:           11
+      retries:            1
+      redos:            0
+      solver_calls_made:           12
+      solver_calls_failed:            1
+      solver_iterations:           67
+    - inlist: inlist_wd_nova_burst_header
+      runtime_minutes:   8.03
+      model_number:          480
+      star_age:     2.4720978091508980E+04
+      num_retries:           19
+      log_rel_run_E_err:        -6.7553645601129819
+      steps:          485
+      retries:           14
+      redos:            0
+      solver_calls_made:          499
+      solver_calls_failed:           14
+      solver_iterations:         3059
+    - inlist: inlist_setup_header
+      runtime_minutes:   0.10
+      model_number:           11
+      star_age:     1.0000000000000000E+07
+      num_retries:            1
+      log_rel_run_E_err:        -2.0804518883152472
+      steps:           11
+      retries:            1
+      redos:            0
+      solver_calls_made:           12
+      solver_calls_failed:            1
+      solver_iterations:           67
+    - inlist: inlist_wd_nova_burst_header
+      runtime_minutes:   7.77
+      model_number:          480
+      star_age:     2.4720978091508980E+04
+      num_retries:           19
+      log_rel_run_E_err:        -6.7553645601129819
+      steps:          485
+      retries:           14
+      redos:            0
+      solver_calls_made:          499
+      solver_calls_failed:           14
+      solver_iterations:         3059

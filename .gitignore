@@ -1,0 +1,22 @@
+# MESA work directories: keep inlists/source, ignore regenerated build/run output
+mesa_work/*/LOGS/
+mesa_work/*/photos/
+mesa_work/*/png/
+mesa_work/*/make/*.o
+mesa_work/*/make/*.mod
+mesa_work/*/make/*.smod
+mesa_work/*/make/*.d
+mesa_work/*/star
+mesa_work/*/restart_photo
+mesa_work/*/.mesa_temp_cache/
+mesa_work/*/final.mod
+
+# Julia
+NovaMessengers/Manifest.toml
+NovaMessengers/test/Manifest.toml
+*.jl.cov
+*.jl.mem
+
+# OS / editor
+.DS_Store
+*.swp

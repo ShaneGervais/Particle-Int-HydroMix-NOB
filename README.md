@@ -158,14 +158,29 @@ half-life tables silently disagreeing).
 - **`NuclearDecay`**: `DecayIsotope(name, daughter, halflife_s, decay_const,
   q_neu_mev, mode)` built from the frozen table. No MESA-run dependency —
   independently unit-testable against literature half-lives.
-- **`MessengerProduction`** (depends on `MesaIO` + `NuclearDecay`):
-  - Neutrino/positron production rate per isotope from finite-differencing
-    `total_mass <iso>` (now present per Phase 0) — directly viable for n13
-    (598s) and f18 (7109s), noisier but usable for o14/o15/f17 (comparable
-    to timestep spacing), and **not used for ne18** (uses the
-    `screened_rate r_f17_pg_ne18` profile column from Phase 0 step 5 instead,
-    read per-zone from `profile*.data` rather than finite-differenced from
-    `history.data`).
+- **`MessengerProduction`** (depends on `MesaIO` + `NuclearDecay`): the
+  messenger emission rate is `decay_rate = lambda * N(t)`, directly — not a
+  finite-differenced "production" estimate. An earlier version tried to
+  reconstruct production by finite-differencing `total_mass_<iso>` and
+  correcting for decay alone, which conflated isotope *formation*
+  (proton/alpha capture) with isotope *decay* (the actual messenger-emitting
+  step) and silently ignored further consumption via proton capture — during
+  hot-CNO breakout burning, captures can outrun decay by orders of magnitude,
+  so that finite-difference estimate was wrong by up to ~100x for some
+  isotopes. Two independent, agreeing implementations now exist:
+  - `decay_rate(run, iso)`: whole-star, `history.data` cadence,
+    `lambda * isotope_number(run, iso)` from `total_mass_<iso>`.
+  - `reaction_decay_rate(run, iso)` / `zone_decay_rate(run, profile, iso)`:
+    whole-star / per-zone, `profile*.data` cadence, from each isotope's
+    single weak-decay reaction (`DECAY_REACTIONS`, e.g. `r_n13_wk_c13`) —
+    the zone-resolved form Phase 3's escape probability needs.
+  - Cross-validated against each other for all 7 isotopes: peak rates agree
+    to within ~10%, confirming both measure the same physical quantity via
+    independent code paths (mass bookkeeping vs local reaction rate).
+  - `FORMATION_REACTIONS` / `formation_rate` / `zone_formation_rate` are kept
+    as a **separate, genuinely different** quantity (isotope synthesis rate,
+    useful for nucleosynthesis-flow bookkeeping) — explicitly not used for
+    messenger rates, to avoid re-introducing the same conflation.
   - `annihilation_photon_rate` = 2x positron rate (site-of-annihilation
     question deferred to Phase 3).
 - **NuPPN trajectory extension**: for isotopes beyond the live net (22Na,
@@ -203,9 +218,9 @@ half-life tables silently disagreeing).
 
 ## Phase 4: signal synthesis
 
-- `neutrino_lightcurve(run)`: sum of Phase 2 production over all tracked
+- `neutrino_lightcurve(run)`: sum of Phase 2 `decay_rate` over all tracked
   isotopes vs. `star_age`.
-- `gamma_lightcurve(run; line_energy)`: Phase 2 zone-resolved production x
+- `gamma_lightcurve(run; line_energy)`: Phase 2 `zone_decay_rate` x
   Phase 3 escape probability, summed over zones vs. time — this is the plot
   that directly answers "does the signal preserve or reshape the underlying
   nuclear information."

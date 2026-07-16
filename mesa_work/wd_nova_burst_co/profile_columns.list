@@ -295,13 +295,39 @@
       !raw_rate r_h1_h1_ec_h2
       !raw_rate r_h1_h1_wk_h2
 
-   ! ne18 production channel (NovaMessengers Phase 2): ne18's 1.7s half-life is
-   ! shorter than a hydro timestep near burst peak, so finite-differencing its
-   ! total_mass won't recover a real production rate -- use the direct,
-   ! screening-corrected per-zone reaction rate instead (reactions/second, i.e.
-   ! ne18 nuclei/second, already integrated over each zone's mass via dm(k))
-      screened_rate r_f17_pg_ne18
-      raw_rate r_f17_pg_ne18
+   ! zone-resolved DECAY channels for all 7 messenger isotopes (NovaMessengers
+   ! Phase 2/3): this is the actual positron/neutrino/photon emission rate
+   ! (one nu + one e+ per decay), needed to weight it by Phase 3's per-zone
+   ! Compton escape probability for the gamma-ray light curve. Each isotope
+   ! has exactly one weak-decay channel in this net, matching
+   ! NuclearDecay.MESSENGER_ISOTOPES' daughter field.
+      screened_rate r_n13_wk_c13    ! n13  -> c13 (+e+ +nu)
+      screened_rate r_o14_wk_n14    ! o14  -> n14
+      screened_rate r_o15_wk_n15    ! o15  -> n15
+      screened_rate r_f17_wk_o17    ! f17  -> o17
+      screened_rate r_f18_wk_o18    ! f18  -> o18
+      screened_rate r_ne18_wk_f18   ! ne18 -> f18
+      screened_rate r_ne19_wk_f19   ! ne19 -> f19
+
+   ! zone-resolved PRODUCTION (formation) channels for the same 7 isotopes:
+   ! a genuinely different quantity from the decay rate above -- how fast
+   ! each isotope is being synthesized by proton/alpha capture, which during
+   ! hot-CNO breakout burning can run much faster than the isotope's own
+   ! decay (captures outrun decay, consuming it before it gets a chance to
+   ! emit a messenger particle). Useful for nucleosynthesis-flow bookkeeping,
+   ! but NOT the messenger emission rate -- see the _wk_ channels for that.
+      screened_rate r_c12_pg_n13    ! -> n13
+      screened_rate r_n13_pg_o14    ! -> o14
+      screened_rate r_n14_pg_o15    ! -> o15
+      screened_rate r_o16_pg_f17    ! -> f17 (channel 1 of 2)
+      screened_rate r_o14_ap_f17    ! -> f17 (channel 2 of 2)
+      screened_rate r_o17_pg_f18    ! -> f18 (channel 1 of 3)
+      screened_rate r_n14_ag_f18    ! -> f18 (channel 2 of 3)
+      screened_rate r_o15_ap_f18    ! -> f18 (channel 3 of 3)
+      screened_rate r_f17_pg_ne18   ! -> ne18 (sole channel)
+      screened_rate r_o15_ag_ne19   ! -> ne19 (channel 1 of 2)
+      screened_rate r_f18_pg_ne19   ! -> ne19 (channel 2 of 2)
+      raw_rate r_f17_pg_ne18        ! kept for the existing raw-vs-screened QA comparison
 
    !burn_num_iters ! Number of split_burn iterations taken
    !burn_avg_epsnuc

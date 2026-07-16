@@ -14,8 +14,10 @@ export DecayIsotope, MESSENGER_ISOTOPES, decay_constant, mass_number
 include("MessengerProduction.jl")
 using .MessengerProduction
 export MessengerProduction
-export isotope_number, production_rate, positron_rate, neutrino_energy_loss_rate,
-       annihilation_photon_rate, ne18_production_rate
+export isotope_number, decay_rate, positron_rate, neutrino_energy_loss_rate,
+       annihilation_photon_rate, DECAY_REACTIONS, zone_decay_rate,
+       zone_annihilation_photon_rate, reaction_decay_rate,
+       FORMATION_REACTIONS, zone_formation_rate, formation_rate
 
 include("Transport.jl")
 using .Transport

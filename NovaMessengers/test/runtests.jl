@@ -34,12 +34,20 @@ end
     @test nrow(df) > 0
     @test :zone in propertynames(df)
     @test :mass in propertynames(df)
-    @test :screened_rate_r_f17_pg_ne18 in propertynames(df)
+    # decay (messenger emission) channels
+    for r in values(DECAY_REACTIONS)
+        @test Symbol("screened_rate_", r) in propertynames(df)
+    end
+    # formation (synthesis) channels
+    for rs in values(FORMATION_REACTIONS), r in rs
+        @test Symbol("screened_rate_", r) in propertynames(df)
+    end
     @test :raw_rate_r_f17_pg_ne18 in propertynames(df)
     # zones are numbered from 1 at the surface
     @test df.zone[1] == 1
-    # screened rate should never be negative
+    # screened rates should never be negative
     @test all(df.screened_rate_r_f17_pg_ne18 .>= 0)
+    @test all(df.screened_rate_r_n13_wk_c13 .>= 0)
 end
 
 @testset "MesaIO.read_profiles_index" begin
@@ -70,26 +78,45 @@ end
     @test_throws ErrorException mass_number(:notanisotope)
 end
 
-@testset "MessengerProduction._finite_diff_production (analytic)" begin
-    import NovaMessengers.MessengerProduction: _finite_diff_production
+@testset "MessengerProduction.DECAY_REACTIONS" begin
+    # every messenger isotope has exactly one weak-decay channel -- this IS
+    # the messenger emission rate, and must match NuclearDecay's daughter
+    for iso in keys(MESSENGER_ISOTOPES)
+        @test haskey(DECAY_REACTIONS, iso)
+    end
+    @test DECAY_REACTIONS[:n13] == :r_n13_wk_c13
+    @test DECAY_REACTIONS[:f18] == :r_f18_wk_o18
+    @test DECAY_REACTIONS[:ne18] == :r_ne18_wk_f18
+end
 
-    # pure decay, no production: N(t) = N0*exp(-lambda*t) exactly satisfies
-    # dN/dt = -lambda*N, so the reconstructed "production" should be ~0
-    # (up to the finite-difference scheme's O((lambda*dt)^2) discretization
-    # error -- keep lambda*dt small so that error is negligible).
-    lambda = 0.01
-    age = collect(0.0:0.01:500.0)
-    N = 1.0e10 .* exp.(-lambda .* age)
-    r = _finite_diff_production(age, N, lambda)
-    @test all(abs.(r.rate) .< 1.0e-4 .* lambda .* maximum(N))
+@testset "MessengerProduction.FORMATION_REACTIONS" begin
+    # a deliberately different table from DECAY_REACTIONS -- isotope
+    # formation (synthesis), not decay (messenger emission); see the
+    # module docs for why the two are not interchangeable
+    for iso in keys(MESSENGER_ISOTOPES)
+        @test haskey(FORMATION_REACTIONS, iso)
+        @test !isempty(FORMATION_REACTIONS[iso])
+    end
+    # isotopes with multiple formation channels, as found in the CO WD net
+    @test length(FORMATION_REACTIONS[:f18]) == 3
+    @test length(FORMATION_REACTIONS[:f17]) == 2
+    @test length(FORMATION_REACTIONS[:ne19]) == 2
+    @test length(FORMATION_REACTIONS[:ne18]) == 1
+end
 
-    # constant production P0 into a decaying species reaches the analytic
-    # solution N(t) = (P0/lambda)*(1 - exp(-lambda*t)); reconstructed
-    # production should recover P0 away from the coarse-step start.
-    P0 = 5.0e6
-    N2 = (P0 / lambda) .* (1 .- exp.(-lambda .* age))
-    r2 = _finite_diff_production(age, N2, lambda)
-    @test all(isapprox.(r2.rate[5:end], P0; rtol=1e-2))
+@testset "MessengerProduction._sum_zone_reaction_rates" begin
+    import NovaMessengers.MessengerProduction: _sum_zone_reaction_rates
+
+    df = read_profile(joinpath(DATA, "profile_sample.data")).data
+
+    # single-channel isotope (ne18's decay): sum of one column is that column
+    @test _sum_zone_reaction_rates(df, (:r_ne18_wk_f18,)) == df.screened_rate_r_ne18_wk_f18
+
+    # multi-channel isotope (f18's formation): sum of three columns
+    expected = df.screened_rate_r_o17_pg_f18 .+ df.screened_rate_r_n14_ag_f18 .+ df.screened_rate_r_o15_ap_f18
+    @test _sum_zone_reaction_rates(df, FORMATION_REACTIONS[:f18]) ≈ expected
+
+    @test_throws ErrorException _sum_zone_reaction_rates(df, (:r_not_a_real_reaction,))
 end
 
 @testset "Transport.escape_probability_neutrino" begin

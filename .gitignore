@@ -12,12 +12,16 @@ mesa_work/*/.mesa_temp_cache/
 mesa_work/*/final.mod
 mesa_work/*/ready.mod
 mesa_work/*/run.log
+mesa_work/*/testhub.yml
 
 # Julia
 NovaMessengers/Manifest.toml
 NovaMessengers/test/Manifest.toml
 *.jl.cov
 *.jl.mem
+
+# harness-internal session state, not project content
+.claude/
 
 # OS / editor
 .DS_Store

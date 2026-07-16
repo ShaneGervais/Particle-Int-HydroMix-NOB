@@ -4,11 +4,54 @@ using DataFrames
 using ..MesaIO
 using ..NuclearDecay
 
-export isotope_number, production_rate, positron_rate, neutrino_energy_loss_rate,
-       annihilation_photon_rate, ne18_production_rate
+export isotope_number, decay_rate, positron_rate, neutrino_energy_loss_rate,
+       annihilation_photon_rate, DECAY_REACTIONS, zone_decay_rate,
+       zone_annihilation_photon_rate, reaction_decay_rate,
+       FORMATION_REACTIONS, zone_formation_rate, formation_rate
 
 const AMU_G = 1.66053906892e-24  # grams (CODATA)
 const YEAR_S = 365.25 * 24 * 3600
+
+"""
+    DECAY_REACTIONS::Dict{Symbol,Symbol}
+
+The single weak-decay reaction (as named in the CO WD baseline's
+`cno_extras_o18_to_mg26_plus_fe56.net`) responsible for each messenger
+isotope's beta+ decay -- one positron + one neutrino per reaction. This
+*is* the messenger emission channel; matches `NuclearDecay.MESSENGER_ISOTOPES`'
+`daughter` field exactly.
+"""
+const DECAY_REACTIONS = Dict{Symbol,Symbol}(
+    :n13 => :r_n13_wk_c13,
+    :o14 => :r_o14_wk_n14,
+    :o15 => :r_o15_wk_n15,
+    :f17 => :r_f17_wk_o17,
+    :f18 => :r_f18_wk_o18,
+    :ne18 => :r_ne18_wk_f18,
+    :ne19 => :r_ne19_wk_f19,
+)
+
+"""
+    FORMATION_REACTIONS::Dict{Symbol,Vector{Symbol}}
+
+The proton/alpha-capture reaction(s) that *form* each messenger isotope
+(some have more than one channel, e.g. f18 has three). This is a genuinely
+different quantity from [`DECAY_REACTIONS`](@ref): during hot-CNO breakout
+burning, proton captures onto an isotope can run faster than its own
+decay, consuming it before it gets a chance to emit a messenger particle.
+Useful for nucleosynthesis-flow bookkeeping (how fast is this isotope
+being synthesized), but NOT the messenger emission rate -- use
+[`zone_decay_rate`](@ref) / [`decay_rate`](@ref) for that.
+"""
+const FORMATION_REACTIONS = Dict{Symbol,Vector{Symbol}}(
+    :n13 => [:r_c12_pg_n13],
+    :o14 => [:r_n13_pg_o14],
+    :o15 => [:r_n14_pg_o15],
+    :f17 => [:r_o16_pg_f17, :r_o14_ap_f17],
+    :f18 => [:r_o17_pg_f18, :r_n14_ag_f18, :r_o15_ap_f18],
+    :ne18 => [:r_f17_pg_ne18],
+    :ne19 => [:r_o15_ag_ne19, :r_f18_pg_ne19],
+)
 
 """
     isotope_number(run::MesaRun, isotope::Symbol) -> Vector{Float64}
@@ -26,65 +69,43 @@ function isotope_number(run::MesaRun, isotope::Symbol)
 end
 
 """
-    production_rate(run::MesaRun, isotope::Symbol) -> (age, rate)
+    decay_rate(run::MesaRun, isotope::Symbol) -> (age, rate)
 
-Reconstruct the production rate (nuclei/second) of `isotope` from
-finite-differencing its whole-star inventory in history.data, correcting
-for the isotope's own decay: dN/dt = production - lambda*N, so
-production = dN/dt + lambda*N.
-
-This is only physically meaningful when the isotope's half-life is resolved
-by the saved history cadence (true for all 7 messenger isotopes given
-history_interval=1 near burst peak, except ne18 -- its 1.7s half-life can be
-shorter than a single hydro timestep, so use [`ne18_production_rate`](@ref)
-instead). Returns rates at the midpoints between consecutive saved ages.
+Whole-star messenger emission rate (decays/second, = positrons/second =
+neutrinos/second) of `isotope`, at history.data's full time cadence:
+`lambda * N(t)`, directly -- no finite-differencing needed, since the
+decay rate is exactly the decay constant times the current inventory by
+definition. (An earlier version of this function tried to reconstruct a
+"production rate" by finite-differencing `total_mass` and correcting for
+decay alone; that conflated isotope *formation* with isotope *decay* and
+silently ignored further consumption via proton capture, which during
+hot-CNO burning can dominate over decay -- see [`FORMATION_REACTIONS`](@ref)
+for why those are a different quantity.)
 """
-function production_rate(run::MesaRun, isotope::Symbol)
+function decay_rate(run::MesaRun, isotope::Symbol)
     N = isotope_number(run, isotope)
     age = history(run).data.star_age .* YEAR_S
     lambda = decay_constant(MESSENGER_ISOTOPES[isotope])
-    return _finite_diff_production(age, N, lambda)
-end
-
-"""
-    _finite_diff_production(age, N, lambda) -> (age, rate)
-
-Numeric core of [`production_rate`](@ref), decoupled from MESA file I/O so
-it can be unit-tested against analytic decay/production solutions directly.
-`age` and `N` are whole-star age (seconds) and nuclei-count time series;
-`lambda` is the isotope's decay constant (1/second).
-"""
-function _finite_diff_production(age::AbstractVector, N::AbstractVector, lambda::Real)
-    n = length(age)
-    age_mid = Vector{Float64}(undef, n - 1)
-    rate = Vector{Float64}(undef, n - 1)
-    for i in 1:(n - 1)
-        dt = age[i + 1] - age[i]
-        dNdt = dt > 0 ? (N[i + 1] - N[i]) / dt : 0.0
-        Nmid = 0.5 * (N[i] + N[i + 1])
-        age_mid[i] = 0.5 * (age[i] + age[i + 1])
-        rate[i] = dNdt + lambda * Nmid
-    end
-    return (age=age_mid, rate=rate)
+    return (age=age, rate=lambda .* N)
 end
 
 """
     positron_rate(run::MesaRun, isotope::Symbol) -> (age, rate)
 
 Positron production rate (positrons/second) -- one per beta+ decay, so
-identical to [`production_rate`](@ref) for these isotopes (all beta+, see
+identical to [`decay_rate`](@ref) for these isotopes (all beta+, see
 `NuclearDecay.MESSENGER_ISOTOPES`).
 """
-positron_rate(run::MesaRun, isotope::Symbol) = production_rate(run, isotope)
+positron_rate(run::MesaRun, isotope::Symbol) = decay_rate(run, isotope)
 
 """
     neutrino_energy_loss_rate(run::MesaRun, isotope::Symbol) -> (age, rate)
 
 Neutrino energy loss rate (MeV/second) from `isotope`'s beta+ decay:
-production rate times the average neutrino energy per decay (`q_neu_mev`).
+decay rate times the average neutrino energy per decay (`q_neu_mev`).
 """
 function neutrino_energy_loss_rate(run::MesaRun, isotope::Symbol)
-    r = production_rate(run, isotope)
+    r = decay_rate(run, isotope)
     q = MESSENGER_ISOTOPES[isotope].q_neu_mev
     return (age=r.age, rate=r.rate .* q)
 end
@@ -102,25 +123,110 @@ function annihilation_photon_rate(run::MesaRun, isotope::Symbol)
 end
 
 """
-    ne18_production_rate(run::MesaRun) -> (age, rate)
+    _sum_zone_reaction_rates(profile_data, reaction_names) -> Vector{Float64}
 
-ne18's 1.7s half-life is shorter than a hydro timestep near burst peak, so
-finite-differencing its total_mass is not physically meaningful (it's in
-secular equilibrium within a single saved step). Instead, sum the screened
-f17(p,g)ne18 reaction rate (`screened_rate_r_f17_pg_ne18`, already
-zone-integrated to reactions/second via MESA's own `dm(k)` weighting) over
-all zones, at each saved profile snapshot. Coarser in time than
-[`production_rate`](@ref) -- limited to profile save points, not every
-history row.
+Sum the `screened_rate_<reaction>` profile columns for `reaction_names`,
+zone by zone. Each column is already integrated over that zone's mass
+(MESA's own `dm(k)` weighting), so no further normalization is needed.
+Shared numeric core of [`zone_decay_rate`](@ref) and
+[`zone_formation_rate`](@ref).
 """
-function ne18_production_rate(run::MesaRun)
+function _sum_zone_reaction_rates(profile_data::AbstractDataFrame, reaction_names)
+    total = zeros(Float64, nrow(profile_data))
+    for r in reaction_names
+        col = Symbol("screened_rate_", r)
+        col in propertynames(profile_data) || error("profile data has no column $col")
+        total .+= profile_data[!, col]
+    end
+    return total
+end
+
+"""
+    zone_decay_rate(run::MesaRun, profile_number::Integer, isotope::Symbol) -> Vector{Float64}
+
+Per-zone messenger emission rate (decays/second) of `isotope` at the given
+profile snapshot, from its single weak-decay channel ([`DECAY_REACTIONS`](@ref)).
+This is the per-zone quantity meant to be multiplied against Phase 3's
+`escape_probability_gamma` (also per-zone, same profile) before summing
+over zones -- unlike [`decay_rate`](@ref), which only has a whole-star
+total available and can't be weighted by depth.
+"""
+function zone_decay_rate(run::MesaRun, profile_number::Integer, isotope::Symbol)
+    reaction = get(DECAY_REACTIONS, isotope) do
+        error("no known decay reaction for isotope $isotope")
+    end
+    df = profile(run, profile_number).data
+    return _sum_zone_reaction_rates(df, (reaction,))
+end
+
+"""
+    zone_annihilation_photon_rate(run::MesaRun, profile_number::Integer, isotope::Symbol) -> Vector{Float64}
+
+Per-zone 511 keV annihilation photon production rate (photons/second):
+two photons per positron, assuming in-situ annihilation (site-of-annihilation
+/ true in-flight annihilation is a further transport refinement, deferred).
+"""
+function zone_annihilation_photon_rate(run::MesaRun, profile_number::Integer, isotope::Symbol)
+    return 2 .* zone_decay_rate(run, profile_number, isotope)
+end
+
+"""
+    reaction_decay_rate(run::MesaRun, isotope::Symbol) -> (age, rate)
+
+Whole-star messenger emission rate (decays/second) of `isotope`, from
+summing [`zone_decay_rate`](@ref) over all zones at each saved profile
+snapshot. Coarser in time than [`decay_rate`](@ref) (limited to profile
+save points, not every history row), but computed from an entirely
+independent path -- MESA's local, screening-corrected reaction rate,
+rather than whole-star mass bookkeeping -- so the two are a genuine
+cross-check on each other.
+"""
+function reaction_decay_rate(run::MesaRun, isotope::Symbol)
     pidx = profiles_index(run)
     hist = history(run).data
     age = Vector{Float64}(undef, nrow(pidx))
     rate = Vector{Float64}(undef, nrow(pidx))
     for (i, row) in enumerate(eachrow(pidx))
-        prof = profile(run, row.profile_number).data
-        rate[i] = sum(prof.screened_rate_r_f17_pg_ne18)
+        rate[i] = sum(zone_decay_rate(run, row.profile_number, isotope))
+        j = findfirst(==(row.model_number), hist.model_number)
+        age[i] = j === nothing ? NaN : hist.star_age[j] * YEAR_S
+    end
+    order = sortperm(age)
+    return (age=age[order], rate=rate[order])
+end
+
+"""
+    zone_formation_rate(run::MesaRun, profile_number::Integer, isotope::Symbol) -> Vector{Float64}
+
+Per-zone formation (synthesis) rate (nuclei/second) of `isotope`, summed
+over all of its production channels ([`FORMATION_REACTIONS`](@ref)). NOT
+the messenger emission rate -- see [`zone_decay_rate`](@ref) for that.
+"""
+function zone_formation_rate(run::MesaRun, profile_number::Integer, isotope::Symbol)
+    reactions = get(FORMATION_REACTIONS, isotope) do
+        error("no known formation reaction(s) for isotope $isotope")
+    end
+    df = profile(run, profile_number).data
+    return _sum_zone_reaction_rates(df, reactions)
+end
+
+"""
+    formation_rate(run::MesaRun, isotope::Symbol) -> (age, rate)
+
+Whole-star formation (synthesis) rate (nuclei/second) of `isotope`, from
+summing [`zone_formation_rate`](@ref) over all zones at each saved profile
+snapshot. A nucleosynthesis-flow diagnostic, not the messenger emission
+rate: comparing this to [`reaction_decay_rate`](@ref) shows how much of a
+freshly-formed isotope gets consumed by further captures before it has a
+chance to decay (the hallmark of hot-CNO breakout burning).
+"""
+function formation_rate(run::MesaRun, isotope::Symbol)
+    pidx = profiles_index(run)
+    hist = history(run).data
+    age = Vector{Float64}(undef, nrow(pidx))
+    rate = Vector{Float64}(undef, nrow(pidx))
+    for (i, row) in enumerate(eachrow(pidx))
+        rate[i] = sum(zone_formation_rate(run, row.profile_number, isotope))
         j = findfirst(==(row.model_number), hist.model_number)
         age[i] = j === nothing ? NaN : hist.star_age[j] * YEAR_S
     end

@@ -290,10 +290,18 @@
    !add_eps_neu_rates  ! Neutrino losses             erg/s
 
    ! individual reactions (as many as desired)
-   ! use list_net_reactions = .true. in star_job to list all reactions in the current net    
+   ! use list_net_reactions = .true. in star_job to list all reactions in the current net
    ! reactions/second
-      !raw_rate r_h1_h1_ec_h2 
+      !raw_rate r_h1_h1_ec_h2
       !raw_rate r_h1_h1_wk_h2
+
+   ! ne18 production channel (NovaMessengers Phase 2): ne18's 1.7s half-life is
+   ! shorter than a hydro timestep near burst peak, so finite-differencing its
+   ! total_mass won't recover a real production rate -- use the direct,
+   ! screening-corrected per-zone reaction rate instead (reactions/second, i.e.
+   ! ne18 nuclei/second, already integrated over each zone's mass via dm(k))
+      screened_rate r_f17_pg_ne18
+      raw_rate r_f17_pg_ne18
 
    !burn_num_iters ! Number of split_burn iterations taken
    !burn_avg_epsnuc

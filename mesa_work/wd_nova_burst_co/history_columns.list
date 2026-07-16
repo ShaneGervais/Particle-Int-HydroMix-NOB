@@ -690,6 +690,14 @@
       ! individual mass totals for entire star (as many as desired)
       total_mass h1
       total_mass he4
+      ! beta+ messenger isotopes (NovaMessengers Phase 2 neutrino/positron production)
+      total_mass n13
+      total_mass o14
+      total_mass o15
+      total_mass f17
+      total_mass f18
+      total_mass ne18
+      total_mass ne19
       ! etc.
 
       ! individual log10  mass totals for entire star (in Msun units)

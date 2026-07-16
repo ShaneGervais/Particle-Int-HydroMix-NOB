@@ -86,13 +86,39 @@ the seed model file, and the `mk`/`rn`/`clean`/`re`/`ck` scripts.
 5. **ne18 exception**: its half-life (1.7s) is shorter than a single MESA
    hydro timestep near burst peak, so it's in secular equilibrium within
    each saved step — finite-differencing its abundance won't recover a real
-   production rate. Add one small `run_star_extras.f90` hook
-   (`data_for_extra_history_columns`, already wired as an extension point in
-   this test case) to expose the `f17(p,g)ne18` reaction rate directly, so
-   ne18 isn't silently wrong in Phase 2. This is the only Fortran-side work
-   needed beyond inlist edits.
+   production rate. No custom Fortran needed for this after all: MESA
+   already exposes named per-reaction rates as profile columns
+   (`screened_rate <name>` / `raw_rate <name>`, in reactions/second,
+   computed internally as `s% screened_rate(i,k) * s% dm(k)` — already
+   integrated over each zone's mass). Added `screened_rate r_f17_pg_ne18`
+   and `raw_rate r_f17_pg_ne18` to `profile_columns.list` directly, which
+   gives the ne18 production rate (nuclei/second per zone) with zero
+   Fortran-side work.
 6. Rerun (~10 min), confirm the new columns show a clean rise/decay through
    the burst window.
+
+### Build notes (this host)
+
+This test case is compiled with `pgstar_flag = .true.` by default, which
+links against the SDK's `libpgplot.so` regardless of the runtime flag value
+(pgstar controls whether it's *invoked*, not whether it's *linked*). Two
+environment-specific fixes were needed to get a working build here, both
+already applied in this copy:
+
+- `mesa_work/env.sh` exports `MESA_DIR`/`MESASDK_ROOT` and sources
+  `mesasdk_init.sh` — `.bashrc` only sets `MESA_DIR`, not the SDK env.
+  Source it before any MESA build/run command:
+  `source mesa_work/env.sh`.
+- `mesa_work/wd_nova_burst_co/make/makefile` sets
+  `LOAD_EXTRAS = -L/usr/lib/x86_64-linux-gnu -lX11 -lxcb -lXau -lXdmcp -lrt -ldl -lpthread`.
+  The SDK's bundled `ld` doesn't auto-resolve pgplot's transitive X11/xcb
+  dependencies on this host even though the libraries are present
+  system-wide, so they need to be listed explicitly.
+- `pgstar_flag` is set to `.false.` in `inlist_wd_nova_burst` for headless
+  batch runs (no `DISPLAY` here). This doesn't affect `LOGS/` output at all
+  — live plotting is separate from data output, and `plot.py` (via
+  `mesa_reader`) or `NovaMessengers` can still make static plots from
+  `history.data`/`profile*.data` afterward.
 
 ## Phase 1: Julia MESA-output reader
 
@@ -137,7 +163,9 @@ half-life tables silently disagreeing).
     `total_mass <iso>` (now present per Phase 0) — directly viable for n13
     (598s) and f18 (7109s), noisier but usable for o14/o15/f17 (comparable
     to timestep spacing), and **not used for ne18** (uses the
-    `run_star_extras.f90` reaction-rate hook from Phase 0 step 5 instead).
+    `screened_rate r_f17_pg_ne18` profile column from Phase 0 step 5 instead,
+    read per-zone from `profile*.data` rather than finite-differenced from
+    `history.data`).
   - `annihilation_photon_rate` = 2x positron rate (site-of-annihilation
     question deferred to Phase 3).
 - **NuPPN trajectory extension**: for isotopes beyond the live net (22Na,
@@ -238,8 +266,10 @@ half-life tables silently disagreeing).
   Qneu source for `NuclearDecay`
 - `~/mesa-25.12.1/star/test_suite/wd_nova_burst/history_columns.list` and
   `profile_columns.list` — files to copy and edit for Phase 0
-- `mesa_work/wd_nova_burst_co/src/run_star_extras.f90` — where the ne18
-  reaction-rate hook goes
+- `mesa_work/wd_nova_burst_co/profile_columns.list` — where the ne18
+  `screened_rate r_f17_pg_ne18` column is enabled
+- `mesa_work/wd_nova_burst_co/make/makefile` — `LOAD_EXTRAS` link workaround
+  for this host's SDK/X11 linking (see below)
 - `NovaMessengers/src/MesaIO.jl` — Phase 1 reader everything downstream
   depends on
 - `NovaMessengers/src/NuclearDecay.jl` — Phase 2 decay-data anchor

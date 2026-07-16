@@ -25,4 +25,10 @@ export Transport
 export ELECTRON_REST_ENERGY_MEV, escape_probability_neutrino, klein_nishina_factor,
        compton_opacity, optical_depth_gamma, escape_probability_gamma
 
+include("SignalSynthesis.jl")
+using .SignalSynthesis
+export SignalSynthesis
+export neutrino_lightcurve, neutrino_energy_lightcurve, gamma_lightcurve,
+       gamma_energy_lightcurve
+
 end # module NovaMessengers

@@ -180,3 +180,37 @@ end
     @test all(0.0 .<= esc .<= 1.0)
     @test esc[1] == 1.0  # surface zone always fully transparent to itself
 end
+
+@testset "SignalSynthesis (mini_run fixture)" begin
+    # mini_run is a small but real, correctly-named MesaRun directory (4
+    # history rows and 4 matching profile*.data snapshots near the burst
+    # peak, models 295/320/345/370), so this exercises the full public
+    # API end to end -- not just the DataFrame-level internals.
+    run = MesaRun(joinpath(DATA, "mini_run"))
+
+    nu = neutrino_lightcurve(run)
+    @test length(nu.age) == length(nu.rate) == 4
+    @test issorted(nu.age)
+    @test all(nu.rate .> 0)
+
+    nu_e = neutrino_energy_lightcurve(run)
+    @test nu_e.age == nu.age
+    @test all(nu_e.rate .> 0)
+
+    g = gamma_lightcurve(run, 0.511)
+    @test length(g.age) == length(g.rate) == 4
+    @test issorted(g.age)
+    @test all(g.rate .>= 0)
+    # envelope thins as the burst subsides -- escaping flux should rise
+    # from ~0 near peak (models 295-345) to clearly nonzero by model 370
+    @test g.rate[end] > 0
+    @test g.rate[end] > g.rate[1]
+
+    ge = gamma_energy_lightcurve(run, 0.511)
+    @test ge.age == g.age
+    @test all(isapprox.(ge.rate, g.rate .* 0.511 .* 1.602176634e-6; rtol=1e-10))
+
+    # single-isotope subset should be <= the full 7-isotope light curve
+    nu_n13 = neutrino_lightcurve(run; isotopes=(:n13,))
+    @test all(nu_n13.rate .<= nu.rate)
+end

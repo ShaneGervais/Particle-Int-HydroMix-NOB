@@ -142,32 +142,45 @@ function _sum_zone_reaction_rates(profile_data::AbstractDataFrame, reaction_name
 end
 
 """
+    zone_decay_rate(profile_data::AbstractDataFrame, isotope::Symbol) -> Vector{Float64}
     zone_decay_rate(run::MesaRun, profile_number::Integer, isotope::Symbol) -> Vector{Float64}
 
-Per-zone messenger emission rate (decays/second) of `isotope` at the given
-profile snapshot, from its single weak-decay channel ([`DECAY_REACTIONS`](@ref)).
-This is the per-zone quantity meant to be multiplied against Phase 3's
+Per-zone messenger emission rate (decays/second) of `isotope`, from its
+single weak-decay channel ([`DECAY_REACTIONS`](@ref)). This is the
+per-zone quantity meant to be multiplied against Phase 3's
 `escape_probability_gamma` (also per-zone, same profile) before summing
 over zones -- unlike [`decay_rate`](@ref), which only has a whole-star
-total available and can't be weighted by depth.
+total available and can't be weighted by depth. The `MesaRun` form reads
+the requested profile; the `AbstractDataFrame` form takes an
+already-loaded one, so callers combining several isotopes / a Transport
+escape probability from the same snapshot (e.g. `SignalSynthesis`) don't
+re-read the same multi-MB profile file over and over.
 """
-function zone_decay_rate(run::MesaRun, profile_number::Integer, isotope::Symbol)
+function zone_decay_rate(profile_data::AbstractDataFrame, isotope::Symbol)
     reaction = get(DECAY_REACTIONS, isotope) do
         error("no known decay reaction for isotope $isotope")
     end
-    df = profile(run, profile_number).data
-    return _sum_zone_reaction_rates(df, (reaction,))
+    return _sum_zone_reaction_rates(profile_data, (reaction,))
+end
+
+function zone_decay_rate(run::MesaRun, profile_number::Integer, isotope::Symbol)
+    return zone_decay_rate(profile(run, profile_number).data, isotope)
 end
 
 """
+    zone_annihilation_photon_rate(profile_data::AbstractDataFrame, isotope::Symbol) -> Vector{Float64}
     zone_annihilation_photon_rate(run::MesaRun, profile_number::Integer, isotope::Symbol) -> Vector{Float64}
 
 Per-zone 511 keV annihilation photon production rate (photons/second):
 two photons per positron, assuming in-situ annihilation (site-of-annihilation
 / true in-flight annihilation is a further transport refinement, deferred).
 """
+function zone_annihilation_photon_rate(profile_data::AbstractDataFrame, isotope::Symbol)
+    return 2 .* zone_decay_rate(profile_data, isotope)
+end
+
 function zone_annihilation_photon_rate(run::MesaRun, profile_number::Integer, isotope::Symbol)
-    return 2 .* zone_decay_rate(run, profile_number, isotope)
+    return zone_annihilation_photon_rate(profile(run, profile_number).data, isotope)
 end
 
 """
@@ -196,18 +209,22 @@ function reaction_decay_rate(run::MesaRun, isotope::Symbol)
 end
 
 """
+    zone_formation_rate(profile_data::AbstractDataFrame, isotope::Symbol) -> Vector{Float64}
     zone_formation_rate(run::MesaRun, profile_number::Integer, isotope::Symbol) -> Vector{Float64}
 
 Per-zone formation (synthesis) rate (nuclei/second) of `isotope`, summed
 over all of its production channels ([`FORMATION_REACTIONS`](@ref)). NOT
 the messenger emission rate -- see [`zone_decay_rate`](@ref) for that.
 """
-function zone_formation_rate(run::MesaRun, profile_number::Integer, isotope::Symbol)
+function zone_formation_rate(profile_data::AbstractDataFrame, isotope::Symbol)
     reactions = get(FORMATION_REACTIONS, isotope) do
         error("no known formation reaction(s) for isotope $isotope")
     end
-    df = profile(run, profile_number).data
-    return _sum_zone_reaction_rates(df, reactions)
+    return _sum_zone_reaction_rates(profile_data, reactions)
+end
+
+function zone_formation_rate(run::MesaRun, profile_number::Integer, isotope::Symbol)
+    return zone_formation_rate(profile(run, profile_number).data, isotope)
 end
 
 """

@@ -218,19 +218,39 @@ half-life tables silently disagreeing).
 
 ## Phase 4: signal synthesis
 
-- `neutrino_lightcurve(run)`: sum of Phase 2 `decay_rate` over all tracked
-  isotopes vs. `star_age`.
-- `gamma_lightcurve(run; line_energy)`: Phase 2 `zone_decay_rate` x
-  Phase 3 escape probability, summed over zones vs. time — this is the plot
-  that directly answers "does the signal preserve or reshape the underlying
-  nuclear information."
-- Coarse time-resolved line spectra (511 keV now; 1.275/1.809 MeV once the
-  NuPPN extension lands) — full Doppler/line-broadening from ejecta velocity
-  explicitly deferred.
+`SignalSynthesis` (depends on `MesaIO` + `NuclearDecay` + `MessengerProduction`
++ `Transport`):
+
+- `neutrino_lightcurve(run; isotopes)`: sum of Phase 2 `decay_rate` over
+  `isotopes` (default: all 7 tracked) vs. `star_age`, at `history.data`'s
+  full time cadence — neutrinos free-stream, so this *is* the observable
+  signal, undistorted by transport. `neutrino_energy_lightcurve` gives the
+  same thing in erg/second.
+- `gamma_lightcurve(run, line_energy_mev; isotopes)`: per-zone
+  `zone_annihilation_photon_rate` (summed over `isotopes`) weighted
+  zone-by-zone by Phase 3's `escape_probability_gamma`, summed over zones,
+  at each saved profile snapshot — coarser in time than the neutrino curve
+  (profile cadence, not every history row) since it needs the zone-resolved
+  structure Phase 3 depends on. `gamma_energy_lightcurve` gives erg/second.
+  Currently only 511 keV is physically populated (all 7 tracked isotopes
+  are beta+ emitters); other line energies work but are empty until the
+  NuPPN extension adds isotopes with their own lines (22Na 1.275 MeV, 26Al
+  1.809 MeV).
+- Validated against the real CO WD run: `gamma_lightcurve` is essentially
+  zero through the compact burst peak (envelope optical depth ~10^9, per
+  Phase 3) and only becomes clearly nonzero once the envelope has expanded
+  post-burst — a real result falling out of the pipeline, not an assumption,
+  and consistent with why real nova gamma-ray line detections lag the
+  optical peak by days-to-weeks. This test case's ~480-step window captures
+  the TNR and decline but not full homologous ejection, so the true
+  days-later turn-on isn't fully resolved yet — a natural target for a
+  longer or ejecta-focused follow-up run.
+- Full Doppler/line-broadening from ejecta velocity explicitly deferred.
 - Parameter sweeps (mixing efficiency, WD mass, CO vs ONe) require
-  additional MESA runs, not just more Julia analysis — `MesaRun`/a
-  `MesaRunSet` batch loader (Phase 1) is designed from the start so Phase 4
-  just adds sibling `mesa_work/` directories and re-runs Phase 1-4 over each.
+  additional MESA runs, not just more Julia analysis — `MesaRun` is designed
+  from the start (Phase 1) to support more than one run, so a sweep is just
+  adding sibling `mesa_work/` directories and re-running Phase 1-4 over each;
+  no batch-loader abstraction has been needed yet with a single run.
 
 ## Julia package tooling
 

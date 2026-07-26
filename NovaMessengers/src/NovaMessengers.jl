@@ -25,6 +25,12 @@ export Transport
 export ELECTRON_REST_ENERGY_MEV, escape_probability_neutrino, klein_nishina_factor,
        compton_opacity, optical_depth_gamma, escape_probability_gamma
 
+include("ReactionEnergetics.jl")
+using .ReactionEnergetics
+export ReactionEnergetics
+export REACTION_Q_VALUES_MEV, MEV_TO_ERG, TRACKED_REACTIONS,
+       zone_reaction_energy_rate, reaction_energy_rate, zone_energy_breakdown
+
 include("SignalSynthesis.jl")
 using .SignalSynthesis
 export SignalSynthesis

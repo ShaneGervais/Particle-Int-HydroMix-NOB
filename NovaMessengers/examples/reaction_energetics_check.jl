@@ -12,8 +12,8 @@ breakdown = zone_energy_breakdown(profile(run, last_profile_number).data)
 peak_zone = argmax(breakdown.total)
 @printf("peak zone: %d, total = %.3e erg/s\n", peak_zone, breakdown.total[peak_zone])
 println("dominant reactions in that zone (top 5 by |rate|):")
-row = breakdown[peak_zone, Not(:total)]
-ranked = sort(collect(pairs(row)); by=p -> -abs(p[2]))
+row = breakdown[peak_zone, :]
+ranked = sort([(r, row[r]) for r in TRACKED_REACTIONS]; by=p -> -abs(p[2]))
 for (reaction, rate) in ranked[1:5]
     @printf("  %-16s %.3e erg/s\n", reaction, rate)
 end

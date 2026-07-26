@@ -5,7 +5,8 @@ using DataFrames
 using ..MesaIO
 
 export REACTION_Q_VALUES_MEV, MEV_TO_ERG, TRACKED_REACTIONS,
-       zone_reaction_energy_rate, reaction_energy_rate, zone_energy_breakdown
+       zone_reaction_energy_rate, reaction_energy_rate, zone_energy_breakdown,
+       energy_breakdown_timeline
 
 const MEV_TO_ERG = 1.602176634e-6  # erg/MeV (exact: 2019 SI redefinition fixes the elementary charge)
 
@@ -110,6 +111,47 @@ network, e.g. the pp chain and triple-alpha, not just these 18).
 function zone_energy_breakdown(profile_data::AbstractDataFrame)
     df = DataFrame([r => zone_reaction_energy_rate(profile_data, r) for r in TRACKED_REACTIONS])
     df.total = sum(eachcol(df))
+    return df
+end
+
+"""
+    energy_breakdown_timeline(run::MesaRun) -> DataFrame
+
+Whole-star energy generation rate (erg/second) from every tracked
+reaction, one row per saved profile snapshot (sorted by `age`, in seconds),
+one column per reaction plus `:total` -- the time-resolved companion to
+[`zone_energy_breakdown`](@ref) (which is depth-resolved, single-snapshot).
+
+Loads each profile file once and sums all 18 reactions from it in a single
+pass (reusing `zone_energy_breakdown` per profile), rather than the
+18x-redundant re-read [`reaction_energy_rate`](@ref) would do if called
+once per reaction over the same run.
+"""
+function energy_breakdown_timeline(run::MesaRun)
+    pidx = profiles_index(run)
+    hist = history(run).data
+    n = nrow(pidx)
+
+    age = Vector{Float64}(undef, n)
+    totals = Dict(r => Vector{Float64}(undef, n) for r in TRACKED_REACTIONS)
+    grand_total = Vector{Float64}(undef, n)
+
+    for (i, row) in enumerate(eachrow(pidx))
+        breakdown = zone_energy_breakdown(profile(run, row.profile_number).data)
+        for r in TRACKED_REACTIONS
+            totals[r][i] = sum(breakdown[!, r])
+        end
+        grand_total[i] = sum(breakdown.total)
+        j = findfirst(==(row.model_number), hist.model_number)
+        age[i] = j === nothing ? NaN : hist.star_age[j] * (365.25 * 24 * 3600)
+    end
+
+    df = DataFrame(age=age)
+    for r in TRACKED_REACTIONS
+        df[!, r] = totals[r]
+    end
+    df.total = grand_total
+    sort!(df, :age)
     return df
 end
 

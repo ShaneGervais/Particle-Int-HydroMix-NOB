@@ -29,7 +29,8 @@ include("ReactionEnergetics.jl")
 using .ReactionEnergetics
 export ReactionEnergetics
 export REACTION_Q_VALUES_MEV, MEV_TO_ERG, TRACKED_REACTIONS,
-       zone_reaction_energy_rate, reaction_energy_rate, zone_energy_breakdown
+       zone_reaction_energy_rate, reaction_energy_rate, zone_energy_breakdown,
+       energy_breakdown_timeline
 
 include("SignalSynthesis.jl")
 using .SignalSynthesis

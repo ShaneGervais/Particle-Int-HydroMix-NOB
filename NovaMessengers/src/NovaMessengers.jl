@@ -48,6 +48,9 @@ export ShockModelParams,
        pion_creation_timescale, cosmic_ray_luminosity, cosmic_ray_energy,
        gamma_ray_luminosity, gamma_ray_luminosity_calorimetric,
        radiative_cooling_length_ratio, downstream_thickness, postshock_field,
-       max_proton_energy_gev, max_proton_energy_gev_closedform
+       max_proton_energy_gev, max_proton_energy_gev_closedform,
+       proton_spectrum, gamma_ray_spectrum,
+       bethe_heitler_cross_section, bethe_heitler_optical_depth,
+       optical_radiation_energy_density, gamma_gamma_optical_depth
 
 end # module NovaMessengers

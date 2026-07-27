@@ -1,5 +1,7 @@
 module ShockAcceleration
 
+using ..Transport: ELECTRON_REST_ENERGY_MEV
+
 export ShockModelParams,
        wind_mass_loss_rate, wind_velocity, shell_mass, shell_velocity, shock_velocity,
        shock_radius, shock_power, shock_temperature, postshock_density, shell_temperature,
@@ -7,7 +9,10 @@ export ShockModelParams,
        pion_creation_timescale, cosmic_ray_luminosity, cosmic_ray_energy,
        gamma_ray_luminosity, gamma_ray_luminosity_calorimetric,
        radiative_cooling_length_ratio, downstream_thickness, postshock_field,
-       max_proton_energy_gev, max_proton_energy_gev_closedform
+       max_proton_energy_gev, max_proton_energy_gev_closedform,
+       proton_spectrum, gamma_ray_spectrum,
+       bethe_heitler_cross_section, bethe_heitler_optical_depth,
+       optical_radiation_energy_density, gamma_gamma_optical_depth
 
 # Physical constants (cgs). MSUN_G matches this project's own MESA run's
 # header `msun` value (frozen-from-MESA principle, same as elsewhere in
@@ -27,6 +32,13 @@ const KM_S_TO_CM_S = 1.0e5
 # Classical Novae" (references/model_shock_classical_novae.pdf):
 const SIGMA_PP_CM2 = 5.0e-26   # proton-proton cross section, text near Eq (19)
 const LAMBDA0 = 2.0e-27        # free-free cooling coefficient, Lambda(T) = LAMBDA0*sqrt(T), Eq (26)
+const SIGMA_T_CM2 = 6.65e-25   # Thomson cross section, text near Eq (37)
+const ALPHA_FS = 1.0 / 137.0   # fine structure constant, "alpha ~= 1/137" per text near Eq (37)
+
+# Proton rest energy (GeV), derived from this module's own PROTON_MASS_G --
+# self-consistent with the proton mass used everywhere else in this module,
+# rather than a separately-copied literature value (~0.938 GeV).
+const PROTON_REST_ENERGY_GEV = PROTON_MASS_G * C_CM_S^2 / GEV_TO_ERG
 
 # rL[cm] = LARMOR_COEFF_CM * E[GeV] / B[G] for an ultra-relativistic
 # proton (rL = pc/(eB) ~ E/(eB)), derived from GEV_TO_ERG/ELEMENTARY_CHARGE_ESU
@@ -251,6 +263,23 @@ radiative_cooling_length_ratio(p, t) -> dimensionless. Delta_rad/Rs, Eq (26):
 the thickness (relative to Rs) that the immediate post-shock region would
 have if it cooled radiatively in a laminar flow -- an upper bound on the
 true (turbulence-suppressed) hot-layer thickness; see [`downstream_thickness`](@ref).
+
+This implements the *middle* form of Eq (26), (3*pi/16)*k*Tsh*mp*vw^2*Rs/(Mdot_w*Lambda(Tsh))
+-- verified symbol-for-symbol against both the published PDF and the arXiv
+HTML/MathJax rendering (arXiv:2604.06310v1), including v_down = v_sh/4 = v_w/8
+and Lambda_0 = 2e-27. Deliberately NOT the paper's own further-reduced
+closed form (their quoted "5.29e-2 * Menv,-4^-1 * tau20^2 * vsh,8^4 * (t/tau) * exp(t/tau)"):
+substituting this module's exact hydrodynamics into that middle form gives
+a coefficient of ~1.95e-2 at v_sh fully saturated (large t), not 5.29e-2 --
+confirmed independently three ways (direct symbolic reduction, and
+back-solving the ratio this function's own output settles to at large
+t/tau in examples/shock_model_validation.jl's Check 6), with no erratum
+found for the paper (single-version, Apr 2026). The ~2.72 (~e) ratio
+between the two candidate coefficients is unexplained; this function
+follows the more primary, independently-reverifiable middle form rather
+than the compressed closed form. If this ever gets resolved (e.g. the
+paper issues a correction, or the missing factor is found), the fix
+belongs here.
 """
 function radiative_cooling_length_ratio(p::ShockModelParams, t::Real)
     Tsh = shock_temperature(p, t)
@@ -335,6 +364,175 @@ function max_proton_energy_gev_closedform(p::ShockModelParams, t::Real)
     B = postshock_field(p, t)
     Emax_erg = 0.75 * (vsh / C_CM_S) * ELEMENTARY_CHARGE_ESU * B * Ddown
     return Emax_erg / GEV_TO_ERG
+end
+
+# --- Gamma-ray spectra (Eq 34-36) -------------------------------------------
+
+"""
+Integrate `f` from `a` to `b` (both > 0) over `n` log-spaced points via the
+trapezoidal rule. The injection-spectrum normalization integral below is a
+smooth power-law-times-exponential-cutoff integrand spanning many decades
+in energy -- log-spaced quadrature handles that well without needing an
+incomplete-gamma/exponential-integral special function (and hence without
+adding SpecialFunctions.jl as a dependency).
+"""
+function _log_trapz(f, a::Real, b::Real, n::Integer=400)
+    logs = range(log(a), log(b); length=n)
+    xs = exp.(logs)
+    total = 0.0
+    fprev = f(xs[1])
+    for i in 2:n
+        fcur = f(xs[i])
+        total += 0.5 * (fcur + fprev) * (xs[i] - xs[i - 1])
+        fprev = fcur
+    end
+    return total
+end
+
+"""
+Normalization `Ai` (protons / GeV) of an injected spectrum
+`Ai*(E/E0)^-2*exp(-E/Emax)` (E0 = 1 GeV) such that its energy integral from
+the proton rest energy to `50*Emax` (the exponential cutoff makes anything
+beyond this negligible) equals `target_energy_gev` -- Eq (34)'s normalization
+constraint, `integral(E*phi_i dE, mp*c^2, Inf) = LCR(ti)*dti`.
+"""
+function _injection_normalization(Emax_gev::Real, target_energy_gev::Real)
+    integrand(E) = E * E^-2 * exp(-E / Emax_gev)  # E0 = 1 GeV folded in
+    denom = _log_trapz(integrand, PROTON_REST_ENERGY_GEV, 50 * Emax_gev)
+    return target_energy_gev / denom
+end
+
+"""
+    proton_spectrum(p, E_grid_gev, t_now, injection_grid) -> Vector{Float64}
+
+phi(E, t_now) [protons/GeV], Eq (34)-(35): the cumulative proton spectrum at
+`t_now` (s) from superposing power-law-with-cutoff spectra injected during
+each epoch of `injection_grid` (s, strictly increasing, all entries
+<= t_now -- each consecutive pair `injection_grid[i], injection_grid[i+1]`
+is one epoch, injected at its midpoint), each evolved from its injection
+time to `t_now` via adiabatic dilation (`Lad = Rs(t_now)/Rs(t_i) >= 1`,
+Eq 35) and proton-proton losses (`Lpi = exp(-(t_now-t_i)/t_pi_avg)`, with
+`t_pi_avg` approximated by `t_pi` at the epoch-to-now midpoint time).
+"""
+function proton_spectrum(p::ShockModelParams, E_grid::AbstractVector{<:Real}, t_now::Real,
+    injection_grid::AbstractVector{<:Real})
+    phi = zeros(Float64, length(E_grid))
+    Rs_now = shock_radius(p, t_now)
+    n_epochs = length(injection_grid) - 1
+    n_epochs >= 1 || error("injection_grid must have at least 2 points")
+
+    for idx in 1:n_epochs
+        ti, ti_next = injection_grid[idx], injection_grid[idx + 1]
+        ti_next > t_now && break
+        dt = ti_next - ti
+        tmid = 0.5 * (ti + ti_next)
+
+        Emax_i = max_proton_energy_gev(p, tmid)
+        LCR_i_dt_gev = cosmic_ray_luminosity(p, tmid) * dt / GEV_TO_ERG
+        Ai = _injection_normalization(Emax_i, LCR_i_dt_gev)
+
+        Rs_i = shock_radius(p, tmid)
+        Lad = Rs_now / Rs_i
+        t_avg = 0.5 * (tmid + t_now)
+        Lpi = exp(-(t_now - tmid) / pion_creation_timescale(p, t_avg))
+
+        for (k, E) in enumerate(E_grid)
+            Eprime = Lad * E
+            phi[k] += Lad * Lpi * Ai * Eprime^-2 * exp(-Eprime / Emax_i)
+        end
+    end
+    return phi
+end
+
+"""
+    gamma_ray_spectrum(p, E_grid_gev, t_now, injection_grid) -> Vector{Float64}
+
+dNgamma/dE [photons/GeV] at `t_now`, Eq (36): `fOmega * phi(E/kappa, t_now) /
+(kappa * t_pi(t_now))`, built from [`proton_spectrum`](@ref).
+
+CONSISTENCY CAVEAT: the paper states integrating `E*dNgamma/dE` should
+recover [`gamma_ray_luminosity`](@ref)'s ODE-based bolometric `Lgamma(t_now)`
+to "within 1%". This implementation lands within a factor of ~1.2-1.7x
+instead (see `examples/shock_spectrum_validation.jl`), for two identified,
+non-overlapping reasons rather than one bug: (1) Eq (19)'s ODE adiabatic
+loss term `ECR/t` implicitly assumes `Rs ~ t` (`d ln Rs/d ln t -> 1`),
+which only holds once `t >> tau`, whereas [`proton_spectrum`](@ref)'s
+`Lad = Rs(t_now)/Rs(t_i)` uses the *exact* `Rs(t)` at any time -- this
+alone explains most of the gap near `t_pk` and shrinks as `t_now` moves
+deeper past `tau` (confirmed: the mismatch improves from 1.49x at
+`t=1.1*tau` to 1.24x at `t=3*tau`, tracking `t*d(ln Rs)/dt` converging to
+1). (2) it then gets *worse* again at `t_now >~ 5*tau` (1.29x at `5*tau`,
+1.72x at `8*tau`) because each summed epoch's [`max_proton_energy_gev`](@ref)
+inherits the already-documented `Delta_rad/Rs` coefficient discrepancy
+(see that function's docstring) -- epochs at large `t/tau` feed an
+increasingly unreliable cutoff into the spectrum. Treat this function's
+bolometric normalization as good to an order of magnitude / factor of
+~2, not the paper's claimed 1%, until the upstream Eq (26) question
+resolves; the spectral *shape* (power law + cutoff location) is on firmer
+footing than the absolute normalization.
+"""
+function gamma_ray_spectrum(p::ShockModelParams, E_grid::AbstractVector{<:Real}, t_now::Real,
+    injection_grid::AbstractVector{<:Real})
+    phi_vals = proton_spectrum(p, E_grid ./ p.kappa, t_now, injection_grid)
+    tpi_now = pion_creation_timescale(p, t_now)
+    return (p.fOmega / (p.kappa * tpi_now)) .* phi_vals
+end
+
+# --- Gamma-ray absorption (Eq 37-40) ----------------------------------------
+
+"""
+    bethe_heitler_cross_section(Eg_gev; Z=7) -> cm^2
+
+Eq (37): Bethe-Heitler pair-production cross section for a gamma-ray of
+energy `Eg_gev` interacting with a nucleus of charge `Z` (default 7,
+nitrogen -- representative of CNO-dominated nova ejecta per the paper's
+own worked example).
+"""
+function bethe_heitler_cross_section(Eg_gev::Real; Z::Real=7)
+    me_c2_gev = ELECTRON_REST_ENERGY_MEV * 1e-3
+    return (3 / (8 * pi)) * ALPHA_FS * SIGMA_T_CM2 * Z^2 *
+           ((28 / 9) * log(2 * Eg_gev / me_c2_gev) - 218 / 27)
+end
+
+"""
+    bethe_heitler_optical_depth(p, t, Eg_gev; A=14, Z=7) -> dimensionless
+
+Eq (38): tau_BH = sigma_BH * (N_H/A), the pair-production optical depth
+through the cool shell for a gamma-ray of energy `Eg_gev`, assuming ejecta
+nuclei of mass number `A` and charge `Z` (defaults A=14, Z=7: nitrogen,
+representative of CNO-dominated ejecta, matching the paper's own worked
+example -- `N_H` from [`column_density`](@ref) is a hydrogen-mass-equivalent
+column, so `N_H/A` converts it to an actual nuclei column).
+"""
+function bethe_heitler_optical_depth(p::ShockModelParams, t::Real, Eg_gev::Real; A::Real=14, Z::Real=7)
+    return bethe_heitler_cross_section(Eg_gev; Z=Z) * column_density(p, t) / A
+end
+
+"""
+optical_radiation_energy_density(p, t) -> erg/cm^3. Eq (39): u_gamma =
+Lsh/(4*pi*c*Rs^2), the seed-photon energy density from shock power
+reprocessed into optical/UV emission, used by [`gamma_gamma_optical_depth`](@ref).
+"""
+optical_radiation_energy_density(p::ShockModelParams, t::Real) =
+    shock_power(p, t) / (4 * pi * C_CM_S * shock_radius(p, t)^2)
+
+"""
+    gamma_gamma_optical_depth(p, t, Eg_gev) -> dimensionless
+
+Eq (40): pair-production optical depth for a gamma-ray of energy `Eg_gev`
+against the nova's own reprocessed optical/UV light (seed photon energy
+`Eopt = (me*c^2)^2/Eg`, cross section `sigma_gg ~= sigma_T/4`). Only
+significant for `Eg` at the TeV scale interacting with ~0.25 eV optical
+seed photons -- negligible for `Eg <~ 100 GeV` (see paper's discussion
+following Eq 40).
+"""
+function gamma_gamma_optical_depth(p::ShockModelParams, t::Real, Eg_gev::Real)
+    me_c2_gev = ELECTRON_REST_ENERGY_MEV * 1e-3
+    Eopt_gev = me_c2_gev^2 / Eg_gev
+    Eopt_erg = Eopt_gev * GEV_TO_ERG
+    n_seed = optical_radiation_energy_density(p, t) / Eopt_erg
+    sigma_gg = SIGMA_T_CM2 / 4
+    return n_seed * shock_radius(p, t) * sigma_gg
 end
 
 end # module ShockAcceleration

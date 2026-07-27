@@ -38,4 +38,16 @@ export SignalSynthesis
 export neutrino_lightcurve, neutrino_energy_lightcurve, gamma_lightcurve,
        gamma_energy_lightcurve
 
+include("ShockAcceleration.jl")
+using .ShockAcceleration
+export ShockAcceleration
+export ShockModelParams,
+       wind_mass_loss_rate, wind_velocity, shell_mass, shell_velocity, shock_velocity,
+       shock_radius, shock_power, shock_temperature, postshock_density, shell_temperature,
+       column_density, shell_density,
+       pion_creation_timescale, cosmic_ray_luminosity, cosmic_ray_energy,
+       gamma_ray_luminosity, gamma_ray_luminosity_calorimetric,
+       radiative_cooling_length_ratio, downstream_thickness, postshock_field,
+       max_proton_energy_gev, max_proton_energy_gev_closedform
+
 end # module NovaMessengers

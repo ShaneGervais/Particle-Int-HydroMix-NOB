@@ -55,7 +55,12 @@ const ELEMENT_Z = Dict(
 const YEAR_S = 365.25 * 24 * 3600
 
 """
-Linear interpolation of `ys` at `x`, given `xs` strictly increasing.
+Linear interpolation of `ys` at `x`, given `xs` strictly increasing:
+for `xs[k] <= x <= xs[k+1]`,
+
+    t = (x - xs[k]) / (xs[k+1] - xs[k])
+    y(x) = ys[k] + t * (ys[k+1] - ys[k])
+
 Clamps to the nearest endpoint outside `[xs[1], xs[end]]` rather than
 erroring -- the tracked mass coordinate is fixed across profiles whose
 mass grids shift slightly (accretion, remeshing), so a few-ULP excursion
@@ -75,10 +80,14 @@ end
 The mass coordinate (Msun) that reaches the highest temperature at any
 saved profile snapshot in the run -- the standard single-zone choice for
 nova nucleosynthesis post-processing (the fluid parcel best representing
-peak hot-CNO burning conditions). Returned alongside the profile number
-where that peak occurs and the peak temperature itself (from the
-profile's own `temperature` column, K, not `logT`, avoiding a log/delog
-round trip).
+peak hot-CNO burning conditions):
+
+    (p*, k*) = argmax_{p, k} T(profile p, zone k)
+    mass_coordinate = mass(p*, k*)
+
+Returned alongside the profile number `p*` where that peak occurs and
+the peak temperature itself (from the profile's own `temperature`
+column, K, not `logT`, avoiding a log/delog round trip).
 """
 function peak_temperature_zone(run::MesaRun)
     pidx = profiles_index(run)
@@ -101,15 +110,21 @@ end
 """
     zone_trajectory(run::MesaRun, mass_coordinate::Real) -> (time_s, T9, rho)
 
-Single-zone T9(t)/rho(t) trajectory at a fixed mass coordinate (Msun),
-built by linearly interpolating each saved profile's `mass`/`temperature`/
-`logRho` columns at that coordinate. Interpolates on mass rather than
-following a raw zone index: profile zones are numbered surface-to-center
-and MESA's zone count/spacing changes between saved snapshots (adaptive
-remeshing), so a fixed zone *index* does not track the same fluid parcel
-over time the way a fixed mass coordinate does. `time_s` comes from
-`history.data`'s `star_age` (years -> seconds), sorted strictly
-increasing -- ReacNetJl's own trajectory reader requires that.
+Single-zone T9(t)/rho(t) trajectory at a fixed mass coordinate `m_c`
+(Msun), built by linearly interpolating (see [`_linterp`](@ref)) each
+saved profile's `mass`/`temperature`/`logRho` columns at that
+coordinate, one point per saved profile `p`:
+
+    T9(t_p)  = T(m_c, p) / 1e9              [T in K -> T9 in GK]
+    rho(t_p) = 10 ^ logRho(m_c, p)          [g/cm^3]
+    t_p      = star_age(model_number(p)) * YEAR_S   [yr -> s]
+
+Interpolates on mass rather than following a raw zone index: profile
+zones are numbered surface-to-center and MESA's zone count/spacing
+changes between saved snapshots (adaptive remeshing), so a fixed zone
+*index* does not track the same fluid parcel over time the way a fixed
+mass coordinate does. `time_s` is sorted strictly increasing --
+ReacNetJl's own trajectory reader requires that.
 """
 function zone_trajectory(run::MesaRun, mass_coordinate::Real)
     pidx = profiles_index(run)
@@ -148,12 +163,15 @@ ReacNetJl's strict-monotonicity check on read-back, not obviously
 connected to a formatting choice from the error alone.
 
 `T9` is clamped to [`REACNETJL_T9_MIN`, `REACNETJL_T9_MAX`] before
-writing: this run's early, pre-ignition epochs sit as low as T9~8e-5
-(~79,000 K) at the tracked zone, below every rate table's tabulated
-floor (~1e6 K) -- physically inert (nuclear rates there are ~0
-regardless of the exact sub-floor value), so flooring changes nothing
-about the burn but avoids an otherwise-opaque out-of-table-range error
-deep in the solver.
+writing:
+
+    T9_written = clamp(T9, REACNETJL_T9_MIN, REACNETJL_T9_MAX)
+
+This run's early, pre-ignition epochs sit as low as T9~8e-5 (~79,000 K)
+at the tracked zone, below every rate table's tabulated floor (~1e6 K)
+-- physically inert (nuclear rates there are ~0 regardless of the exact
+sub-floor value), so flooring changes nothing about the burn but avoids
+an otherwise-opaque out-of-table-range error deep in the solver.
 """
 function write_trajectory_file(path::AbstractString, time_s::AbstractVector{<:Real},
     T9::AbstractVector{<:Real}, rho::AbstractVector{<:Real})
@@ -269,6 +287,12 @@ composition, but leaves the resulting trajectory needing to traverse
 tolerance still exhaust ReacNetJl's `max_steps` in the millions before
 converging).
 
+Concretely:
+
+    max_h1    = max_p h1(m_c, p)
+    threshold = (1 - rtol) * max_h1
+    p*        = max { p : h1(m_c, p) >= threshold }     (latest such p)
+
 The default `rtol=5e-3` (0.5%) was chosen empirically from this run: h1
 does not decline monotonically once heating starts -- it visibly
 oscillates (0.694, 0.695, 0.694, 0.697, ...) over the final ~1.5 years
@@ -313,22 +337,38 @@ End-to-end bridge from a MESA run to a ReacNetJl post-processing result:
    for why this is not simply the earliest profile).
 3. Extract the T9(t)/rho(t) trajectory ([`zone_trajectory`](@ref))
    **from that pristine epoch onward only**, rebased so it starts at
-   t=0 there. This run's saved history spans ~1e2 s to ~1e11 s (a
-   multi-millennium pre-outburst accretion tail before the tracked zone
-   is even done mixing), and that whole leading span is both physically
-   outside what "evolve this starting composition forward" means and
-   expensive for the solver to step through for no reason (confirmed:
-   including it hits ReacNetJl's default `max_steps=1_000_000` without
-   converging) -- trimming to the pristine epoch onward fixes both.
+   t=0 there:
+
+       t0        = star_age(pristine profile) * YEAR_S
+       t'        = { t - t0 : t >= t0 }             (dropped otherwise)
+
+   This run's saved history spans ~1e2 s to ~1e11 s (a multi-millennium
+   pre-outburst accretion tail before the tracked zone is even done
+   mixing), and that whole leading span is both physically outside what
+   "evolve this starting composition forward" means and expensive for
+   the solver to step through for no reason (confirmed: including it
+   hits ReacNetJl's default `max_steps=1_000_000` without converging)
+   -- trimming to the pristine epoch onward fixes both.
 4. Write both in ReacNetJl's own file formats under `output_dir`.
 5. Call `ReacNetJl.run_ppn` directly, in-process -- no CSV round trip on
    the way back; `result.final_mass_fractions` is a `Dict{String,Float64}`
-   already in the same isotope-name convention this project uses.
+   already in the same isotope-name convention this project uses. Unless
+   `kwargs` already sets `dt_max`, one is computed from the trimmed
+   trajectory's own duration:
+
+       duration = t'[end] - t'[1]
+       dt_max   = max(20.0, duration / 500)
+
+   overriding `run_ppn`'s own default (`duration > 100s ? 20.0 : 0.05`,
+   tuned for hours-to-days trajectories, not this one's ~years) -- see
+   the inline comment above the `merge` call below for why that default
+   alone made the solver exceed `max_steps` regardless of the physics.
 
 `kwargs` are forwarded to `run_ppn` (e.g. `screening`, `neutron_captures`,
-`max_steps`). Returns `(mass_coordinate, trajectory, initial_abundances,
-result)` so callers know which zone/time window the returned abundances
-describe, not just the final numbers.
+`max_steps`, or an explicit `dt_max` to override the formula above).
+Returns `(mass_coordinate, trajectory, initial_abundances, result)` so
+callers know which zone/time window the returned abundances describe,
+not just the final numbers.
 """
 function postprocess_trajectory(run::MesaRun; output_dir::AbstractString, rates::Symbol=:starlib,
     pristine_rtol::Real=5.0e-3, kwargs...)

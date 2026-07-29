@@ -20,6 +20,12 @@ NovaMessengers/test/Manifest.toml
 *.jl.cov
 *.jl.mem
 
+# Regenerable ReacNetJl post-processing output (mass_fractions.csv,
+# network.csv, reaction_fluxes.csv, ...) -- same "regenerable output stays
+# out of git" convention as mesa_work/*/LOGS/, not the small hand-picked
+# plots convention plt_out/ uses.
+NovaMessengers/examples/reacnetjl_out/
+
 # ReacNetJl lives at ~/Documents/ReacNetJl and is referenced from there
 # (NovaMessengers/Project.toml dev-dependency, path-based) -- not vendored.
 # This repo-root copy is a stray nested git repo from an earlier working

@@ -25,7 +25,13 @@ end
 """
     decay_constant(iso::DecayIsotope) -> Float64
 
-Decay constant lambda = ln(2) / halflife, in 1/second.
+Decay constant, in 1/second, from the isotope's half-life:
+
+    lambda = ln(2) / halflife_s
+
+the rate constant in the exponential decay law N(t) = N0 * exp(-lambda*t)
+that [`MessengerProduction.decay_rate`](@ref) (`= lambda * N(t)`) is
+built from.
 """
 decay_constant(iso::DecayIsotope) = log(2) / iso.halflife_s
 

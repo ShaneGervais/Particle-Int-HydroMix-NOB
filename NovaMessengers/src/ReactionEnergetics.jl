@@ -25,9 +25,14 @@ weak decays in `MessengerProduction.DECAY_REACTIONS` and the 11
 proton/alpha captures in `MessengerProduction.FORMATION_REACTIONS`.
 
 Computed directly from MESA's own `data/chem_data/isotopes.data` mass
-excesses (Q = sum(mass excess, reactants) - sum(mass excess, products),
-minus 2*m_e*c^2 for the beta+ decays, using `Transport.ELECTRON_REST_ENERGY_MEV`),
-NOT copied from an external compilation -- so these stay numerically
+excesses:
+
+    Q = sum(mass excess, reactants) - sum(mass excess, products)
+    Q_beta+ = Q - 2 * m_e*c^2     (extra rest-mass cost of e+ + the
+                                   captured/annihilated e- accounting)
+
+using `Transport.ELECTRON_REST_ENERGY_MEV` for `m_e*c^2` in the beta+
+case, NOT copied from an external compilation -- so these stay numerically
 self-consistent with exactly the isotope masses this MESA version used
 internally, the same reasoning as `NuclearDecay`'s `weak_info_subset.csv`.
 Cross-checked: every decay Q here exceeds
@@ -55,8 +60,11 @@ const TRACKED_REACTIONS = sort(collect(keys(REACTION_Q_VALUES_MEV)))
     zone_reaction_energy_rate(profile_data, reaction::Symbol) -> Vector{Float64}
     zone_reaction_energy_rate(run::MesaRun, profile_number::Integer, reaction::Symbol) -> Vector{Float64}
 
-Per-zone energy generation rate (erg/second) from `reaction`: its
-`screened_rate_<reaction>` profile column (reactions/second, already
+Per-zone energy generation rate (erg/second) from `reaction`:
+
+    rate[k] = screened_rate[k] * Q * MEV_TO_ERG
+
+its `screened_rate_<reaction>` profile column (reactions/second, already
 integrated over the zone's mass -- MESA's own `dm(k)` weighting, same
 convention `MessengerProduction` reads) times its Q-value.
 """
@@ -76,10 +84,13 @@ end
 """
     reaction_energy_rate(run::MesaRun, reaction::Symbol) -> (age, rate)
 
-Whole-star energy generation rate (erg/second) from `reaction`, summed
-over all zones at each saved profile snapshot -- profile cadence, not
-every history row (same tradeoff as `MessengerProduction.reaction_decay_rate`,
-which this mirrors).
+Whole-star energy generation rate (erg/second) from `reaction`:
+
+    rate(t_p) = sum_k zone_reaction_energy_rate(profile p)[k]
+
+summed over all zones `k` at each saved profile snapshot `p` --
+profile cadence, not every history row (same tradeoff as
+`MessengerProduction.reaction_decay_rate`, which this mirrors).
 """
 function reaction_energy_rate(run::MesaRun, reaction::Symbol)
     pidx = profiles_index(run)
@@ -100,7 +111,11 @@ end
 
 Per-zone energy generation rate (erg/second) from every tracked reaction,
 one column per reaction (e.g. `:r_c12_pg_n13`, in `TRACKED_REACTIONS`
-order), plus a `:total` column summing them. This is the reaction-resolved
+order), plus a `:total` column summing them:
+
+    total[k] = sum_r zone_reaction_energy_rate(r)[k],   r in TRACKED_REACTIONS
+
+This is the reaction-resolved
 decomposition of (a slice of) what MESA's own `eps_nuc` profile column
 already gives you in bulk -- useful for seeing which specific reaction
 dominates energy release at a given depth/time, and for comparing that

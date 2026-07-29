@@ -56,9 +56,12 @@ const FORMATION_REACTIONS = Dict{Symbol,Vector{Symbol}}(
 """
     isotope_number(run::MesaRun, isotope::Symbol) -> Vector{Float64}
 
-Number of nuclei of `isotope` in the whole star at each saved history model,
+Number of nuclei of `isotope` in the whole star at each saved history model:
+
+    N = (total_mass_<isotope> * msun) / (A * AMU_G)
+
 from the `total_mass_<isotope>` column (Msun, converted using this run's own
-`msun` header value) and the isotope's mass number (amu approximation).
+`msun` header value) and the isotope's mass number `A` (amu approximation).
 """
 function isotope_number(run::MesaRun, isotope::Symbol)
     h = history(run)
@@ -73,9 +76,12 @@ end
 
 Whole-star messenger emission rate (decays/second, = positrons/second =
 neutrinos/second) of `isotope`, at history.data's full time cadence:
-`lambda * N(t)`, directly -- no finite-differencing needed, since the
-decay rate is exactly the decay constant times the current inventory by
-definition. (An earlier version of this function tried to reconstruct a
+
+    rate(t) = lambda * N(t)
+
+directly -- no finite-differencing needed, since the decay rate is
+exactly the decay constant times the current inventory by definition.
+(An earlier version of this function tried to reconstruct a
 "production rate" by finite-differencing `total_mass` and correcting for
 decay alone; that conflated isotope *formation* with isotope *decay* and
 silently ignored further consumption via proton capture, which during
@@ -102,6 +108,9 @@ positron_rate(run::MesaRun, isotope::Symbol) = decay_rate(run, isotope)
     neutrino_energy_loss_rate(run::MesaRun, isotope::Symbol) -> (age, rate)
 
 Neutrino energy loss rate (MeV/second) from `isotope`'s beta+ decay:
+
+    rate_nu(t) = decay_rate(t) * q_neu_mev
+
 decay rate times the average neutrino energy per decay (`q_neu_mev`).
 """
 function neutrino_energy_loss_rate(run::MesaRun, isotope::Symbol)
@@ -113,9 +122,12 @@ end
 """
     annihilation_photon_rate(run::MesaRun, isotope::Symbol) -> (age, rate)
 
-511 keV annihilation photon production rate (photons/second): two photons
-per positron, assuming in-situ annihilation (site-of-annihilation / true
-in-flight annihilation is a Phase 3 transport question, deferred here).
+511 keV annihilation photon production rate (photons/second):
+
+    rate_gamma(t) = 2 * positron_rate(t)
+
+two photons per positron, assuming in-situ annihilation (site-of-annihilation
+/ true in-flight annihilation is a Phase 3 transport question, deferred here).
 """
 function annihilation_photon_rate(run::MesaRun, isotope::Symbol)
     r = positron_rate(run, isotope)
@@ -126,10 +138,13 @@ end
     _sum_zone_reaction_rates(profile_data, reaction_names) -> Vector{Float64}
 
 Sum the `screened_rate_<reaction>` profile columns for `reaction_names`,
-zone by zone. Each column is already integrated over that zone's mass
-(MESA's own `dm(k)` weighting), so no further normalization is needed.
-Shared numeric core of [`zone_decay_rate`](@ref) and
-[`zone_formation_rate`](@ref).
+zone by zone:
+
+    total[k] = sum_r screened_rate_r[k],   r in reaction_names
+
+Each column is already integrated over that zone's mass (MESA's own
+`dm(k)` weighting), so no further normalization is needed. Shared
+numeric core of [`zone_decay_rate`](@ref) and [`zone_formation_rate`](@ref).
 """
 function _sum_zone_reaction_rates(profile_data::AbstractDataFrame, reaction_names)
     total = zeros(Float64, nrow(profile_data))
@@ -171,9 +186,10 @@ end
     zone_annihilation_photon_rate(profile_data::AbstractDataFrame, isotope::Symbol) -> Vector{Float64}
     zone_annihilation_photon_rate(run::MesaRun, profile_number::Integer, isotope::Symbol) -> Vector{Float64}
 
-Per-zone 511 keV annihilation photon production rate (photons/second):
-two photons per positron, assuming in-situ annihilation (site-of-annihilation
-/ true in-flight annihilation is a further transport refinement, deferred).
+Per-zone 511 keV annihilation photon production rate (photons/second),
+`rate_gamma[k] = 2 * zone_decay_rate[k]`: two photons per positron,
+assuming in-situ annihilation (site-of-annihilation / true in-flight
+annihilation is a further transport refinement, deferred).
 """
 function zone_annihilation_photon_rate(profile_data::AbstractDataFrame, isotope::Symbol)
     return 2 .* zone_decay_rate(profile_data, isotope)
@@ -186,9 +202,12 @@ end
 """
     reaction_decay_rate(run::MesaRun, isotope::Symbol) -> (age, rate)
 
-Whole-star messenger emission rate (decays/second) of `isotope`, from
-summing [`zone_decay_rate`](@ref) over all zones at each saved profile
-snapshot. Coarser in time than [`decay_rate`](@ref) (limited to profile
+Whole-star messenger emission rate (decays/second) of `isotope`:
+
+    rate(t_p) = sum_k zone_decay_rate(profile p)[k]
+
+from summing [`zone_decay_rate`](@ref) over all zones `k` at each saved
+profile snapshot `p`. Coarser in time than [`decay_rate`](@ref) (limited to profile
 save points, not every history row), but computed from an entirely
 independent path -- MESA's local, screening-corrected reaction rate,
 rather than whole-star mass bookkeeping -- so the two are a genuine
@@ -212,8 +231,11 @@ end
     zone_formation_rate(profile_data::AbstractDataFrame, isotope::Symbol) -> Vector{Float64}
     zone_formation_rate(run::MesaRun, profile_number::Integer, isotope::Symbol) -> Vector{Float64}
 
-Per-zone formation (synthesis) rate (nuclei/second) of `isotope`, summed
-over all of its production channels ([`FORMATION_REACTIONS`](@ref)). NOT
+Per-zone formation (synthesis) rate (nuclei/second) of `isotope`:
+
+    rate[k] = sum_r screened_rate_r[k],   r in FORMATION_REACTIONS[isotope]
+
+summed over all of its production channels ([`FORMATION_REACTIONS`](@ref)). NOT
 the messenger emission rate -- see [`zone_decay_rate`](@ref) for that.
 """
 function zone_formation_rate(profile_data::AbstractDataFrame, isotope::Symbol)
@@ -230,9 +252,12 @@ end
 """
     formation_rate(run::MesaRun, isotope::Symbol) -> (age, rate)
 
-Whole-star formation (synthesis) rate (nuclei/second) of `isotope`, from
-summing [`zone_formation_rate`](@ref) over all zones at each saved profile
-snapshot. A nucleosynthesis-flow diagnostic, not the messenger emission
+Whole-star formation (synthesis) rate (nuclei/second) of `isotope`:
+
+    rate(t_p) = sum_k zone_formation_rate(profile p)[k]
+
+from summing [`zone_formation_rate`](@ref) over all zones `k` at each
+saved profile snapshot `p`. A nucleosynthesis-flow diagnostic, not the messenger emission
 rate: comparing this to [`reaction_decay_rate`](@ref) shows how much of a
 freshly-formed isotope gets consumed by further captures before it has a
 chance to decay (the hallmark of hot-CNO breakout burning).

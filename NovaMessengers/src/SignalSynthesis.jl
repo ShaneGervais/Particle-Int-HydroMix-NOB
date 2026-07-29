@@ -15,7 +15,10 @@ const YEAR_S = 365.25 * 24 * 3600
 """
     neutrino_lightcurve(run::MesaRun; isotopes=keys(MESSENGER_ISOTOPES)) -> (age, rate)
 
-Total whole-star neutrino emission rate (neutrinos/second) vs. `star_age`,
+Total whole-star neutrino emission rate (neutrinos/second) vs. `star_age`:
+
+    rate_nu(t) = sum_i decay_rate_i(t),   i in isotopes
+
 summed over `isotopes` (default: all 7 tracked messenger isotopes).
 Neutrinos free-stream (`Transport.escape_probability_neutrino` is always
 1), so Phase 2's [`decay_rate`](@ref) *is* the observable signal here,
@@ -34,8 +37,11 @@ end
 """
     neutrino_energy_lightcurve(run::MesaRun; isotopes=keys(MESSENGER_ISOTOPES)) -> (age, rate)
 
-Total neutrino energy-loss rate (erg/second) vs. `star_age`, summed over
-`isotopes`. Same free-streaming logic as [`neutrino_lightcurve`](@ref).
+Total neutrino energy-loss rate (erg/second) vs. `star_age`:
+
+    L_nu(t) = sum_i neutrino_energy_loss_rate_i(t) * MEV_TO_ERG,   i in isotopes
+
+Same free-streaming logic as [`neutrino_lightcurve`](@ref).
 """
 function neutrino_energy_lightcurve(run::MesaRun; isotopes=keys(MESSENGER_ISOTOPES))
     age = decay_rate(run, first(isotopes)).age
@@ -50,10 +56,14 @@ end
     gamma_lightcurve(run::MesaRun, line_energy_mev::Real; isotopes=keys(MESSENGER_ISOTOPES)) -> (age, rate)
 
 Observable annihilation-line photon escape rate (photons/second) at
-`line_energy_mev`, vs. `star_age`: Phase 2's per-zone photon production
-([`zone_annihilation_photon_rate`](@ref), summed over `isotopes`) weighted
-zone-by-zone by Phase 3's [`escape_probability_gamma`](@ref), then summed
-over zones, at each saved profile snapshot. This is the plot that directly
+`line_energy_mev`, vs. `star_age`:
+
+    rate(t_p) = sum_k [ sum_i zone_annihilation_photon_rate_i(p)[k] ] * P_escape(p)[k]
+
+Phase 2's per-zone photon production ([`zone_annihilation_photon_rate`](@ref),
+summed over `isotopes` `i`) weighted zone-by-zone (`k`) by Phase 3's
+[`escape_probability_gamma`](@ref), then summed over zones, at each saved
+profile snapshot `p`. This is the plot that directly
 answers "does the signal preserve or reshape the underlying nuclear
 information": compare its shape/timing against [`neutrino_lightcurve`](@ref)
 from the same burst.
@@ -93,8 +103,11 @@ end
 """
     gamma_energy_lightcurve(run::MesaRun, line_energy_mev::Real; isotopes=keys(MESSENGER_ISOTOPES)) -> (age, rate)
 
-Observable line luminosity (erg/second) at `line_energy_mev`: `gamma_lightcurve`
-converted from photons/second to erg/second.
+Observable line luminosity (erg/second) at `line_energy_mev`:
+
+    L_gamma(t) = gamma_lightcurve(t) * line_energy_mev * MEV_TO_ERG
+
+`gamma_lightcurve` converted from photons/second to erg/second.
 """
 function gamma_energy_lightcurve(run::MesaRun, line_energy_mev::Real; isotopes=keys(MESSENGER_ISOTOPES))
     g = gamma_lightcurve(run, line_energy_mev; isotopes=isotopes)

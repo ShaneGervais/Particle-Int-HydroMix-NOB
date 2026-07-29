@@ -25,11 +25,20 @@ escape_probability_neutrino(args...; kwargs...) = 1.0
     klein_nishina_factor(E_mev) -> Float64
 
 Ratio of the total Klein-Nishina Compton cross section to the Thomson
-cross section, at photon energy `E_mev` (MeV). Equals 1 in the low-energy
-(Thomson) limit and falls off above the electron rest energy (511 keV) --
-this is why different messenger lines (511 keV annihilation vs 1.275 MeV /
-1.809 MeV decay lines) don't escape with the same probability from the
-same depth, even though they're all "gamma rays."
+cross section, at photon energy `E_mev` (MeV). With `x = E_mev / m_e c^2`,
+the Klein-Nishina total cross section (Sauter/Klein-Nishina formula) is
+
+    sigma_KN / sigma_T = (3/4) * [
+        (1+x)/x^3 * ( 2x(1+x)/(1+2x) - ln(1+2x) )
+        + ln(1+2x) / (2x)
+        - (1+3x) / (1+2x)^2
+    ]
+
+Equals 1 in the low-energy (Thomson) limit `x -> 0` and falls off above
+the electron rest energy (511 keV) -- this is why different messenger
+lines (511 keV annihilation vs 1.275 MeV / 1.809 MeV decay lines) don't
+escape with the same probability from the same depth, even though
+they're all "gamma rays."
 """
 function klein_nishina_factor(E_mev::Real)
     E_mev > 0 || error("photon energy must be positive, got $E_mev")
@@ -38,21 +47,26 @@ function klein_nishina_factor(E_mev::Real)
     # terms that must resolve an O(x^3) result, so forming "1+2x" before
     # taking the log (rounding x into the mantissa of a number near 1)
     # loses precision catastrophically for x below ~1e-4.
-    l = log1p(2x)
+    l = log1p(2x)                          # l = ln(1 + 2x)
     term1 = (1 + x) / x^3 * (2x * (1 + x) / (1 + 2x) - l)
     term2 = l / (2x)
     term3 = (1 + 3x) / (1 + 2x)^2
-    return 0.75 * (term1 + term2 - term3)
+    return 0.75 * (term1 + term2 - term3)  # sigma_KN / sigma_T
 end
 
 """
     compton_opacity(x_h1, E_mev) -> Float64
 
 Compton scattering opacity (cm^2/g) for a photon of energy `E_mev` in
-material with hydrogen mass fraction `x_h1`. Built from the free-electron
-(Thomson) opacity `0.2*(1+X)` -- the standard stellar-structure formula
-for electron-scattering opacity -- times the Klein-Nishina reduction
-factor at this energy. This is deliberately NOT MESA's own `log_opacity`
+material with hydrogen mass fraction `x_h1`:
+
+    kappa(E) = kappa_Thomson * [sigma_KN(E) / sigma_T]
+    kappa_Thomson = 0.2 * (1 + X)
+
+Built from the free-electron (Thomson) opacity `kappa_Thomson` -- the
+standard stellar-structure formula for electron-scattering opacity --
+times [`klein_nishina_factor`](@ref) at this energy. This is deliberately
+NOT MESA's own `log_opacity`
 profile column: that's a Rosseland mean appropriate for the thermal
 radiation field (mixing in bound-free and other processes), not a single
 discrete MeV-scale line photon, whose dominant interaction here is Compton
@@ -67,8 +81,15 @@ end
     optical_depth_gamma(profile_data, E_mev; rsun_cm) -> Vector{Float64}
 
 Compton optical depth from each zone out to the stellar surface, for a
-photon of energy `E_mev`, using the profile's own `radius` (Rsun),
-`logRho`, and `x_mass_fraction_H` columns. `profile_data` must be ordered
+photon of energy `E_mev`:
+
+    tau(1) = 0
+    tau(k) = tau(k-1) + (1/2) * [rho(k-1)*kappa(k-1) + rho(k)*kappa(k)] * |r(k-1) - r(k)|
+
+the trapezoidal-rule integral `tau = integral(rho * kappa(E), dr)` from
+the surface (zone 1) in to zone `k`, using the profile's own `radius`
+(Rsun), `logRho`, and `x_mass_fraction_H` columns (`kappa` from
+[`compton_opacity`](@ref)). `profile_data` must be ordered
 from zone 1 at the surface inward (MESA's own convention) -- one value is
 returned per zone. `rsun_cm` is required explicitly (rather than defaulted)
 so callers pull it from the run's own history header (`history(run).header.rsun`)
@@ -94,10 +115,13 @@ end
     escape_probability_gamma(profile_data, E_mev; rsun_cm) -> Vector{Float64}
     escape_probability_gamma(run::MesaRun, profile_number, E_mev) -> Vector{Float64}
 
-`exp(-tau_gamma)` at each zone: the first-order (pure attenuation, no
-scattering redistribution) escape probability for a photon of energy
-`E_mev` produced at that zone. The `MesaRun` form reads the requested
-profile and pulls `rsun_cm` from the run's own history header.
+    P_escape(k) = exp(-tau_gamma(k))
+
+at each zone `k`: the first-order (pure attenuation, no scattering
+redistribution) escape probability for a photon of energy `E_mev`
+produced at that zone (`tau_gamma` from [`optical_depth_gamma`](@ref)).
+The `MesaRun` form reads the requested profile and pulls `rsun_cm` from
+the run's own history header.
 """
 function escape_probability_gamma(profile_data::AbstractDataFrame, E_mev::Real; rsun_cm::Real)
     return exp.(-optical_depth_gamma(profile_data, E_mev; rsun_cm=rsun_cm))

@@ -53,4 +53,11 @@ export ShockModelParams,
        bethe_heitler_cross_section, bethe_heitler_optical_depth,
        optical_radiation_energy_density, gamma_gamma_optical_depth
 
+include("TrajectoryPostProcessing.jl")
+using .TrajectoryPostProcessing
+export TrajectoryPostProcessing
+export LIVE_NET_ISOTOPES, peak_temperature_zone, zone_trajectory,
+       write_trajectory_file, zone_initial_abundances,
+       write_initial_abundance_file, pristine_profile_number, postprocess_trajectory
+
 end # module NovaMessengers

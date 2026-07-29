@@ -20,6 +20,12 @@ NovaMessengers/test/Manifest.toml
 *.jl.cov
 *.jl.mem
 
+# ReacNetJl lives at ~/Documents/ReacNetJl and is referenced from there
+# (NovaMessengers/Project.toml dev-dependency, path-based) -- not vendored.
+# This repo-root copy is a stray nested git repo from an earlier working
+# copy; ignored rather than tracked or deleted outright.
+/ReacNetJl/
+
 # harness-internal session state, not project content
 .claude/
 

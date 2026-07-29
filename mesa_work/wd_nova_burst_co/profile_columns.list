@@ -38,6 +38,15 @@
    y_mass_fraction_He
    z_mass_fraction_metals
 
+   ! per-isotope zone-resolved mass fractions for every species in the live
+   ! net (h1 he3 he4 c12 c13 n13 n14 n15 o14 o15 o16 o17 o18 f17 f18 f19
+   ! ne18 ne19 ne20 ne22 mg22 mg24 mg26 fe56) -- this is the initial
+   ! abundance vector NovaMessengers' TrajectoryPostProcessing bridge feeds
+   ! to ReacNetJl's larger network as the starting composition of the
+   ! tracked zone's trajectory. Bulk x_mass_fraction_H/y_mass_fraction_He
+   ! above are sums, not enough to reconstruct the per-isotope vector.
+   add_abundances
+
 
 ! everything below this line is deactivated
 

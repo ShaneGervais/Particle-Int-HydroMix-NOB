@@ -256,20 +256,31 @@ further mixing pulses after that point; MESA's live net already
 captures those self-consistently in its own `total_mass_<iso>` history,
 which remains the cross-check).
 
-Among profiles tied at (or within `rtol` of) that maximum, the *latest*
-one is picked, not the first. Confirmed from this run's own data: h1 at
-the tracked zone hits 0.70 at profile 13 (~25 hours into a run that
-starts from an artificial relaxed initial model) and then sits flat at
-0.70 for the next ~22,000 years (profiles 13-41) before compressional
-heating finally starts consuming it -- picking the *first* occurrence
-(profile 13) is still a physically valid pristine composition, but
-leaves the resulting trajectory needing to traverse those ~22,000
-physically inert years for no benefit (confirmed: doing so exhausts
-ReacNetJl's default `max_steps` before converging). The *last*
-near-maximum profile is the same composition to within `rtol` but sits
-right at the edge of when real dynamics begin.
+Among profiles at (or within `rtol` of) that maximum, the *latest* one
+chronologically is picked, not the first. Confirmed from this run's own
+data: h1 at the tracked zone hits 0.70 at profile 13 (~25 hours into a
+run that starts from an artificial relaxed initial model) and then sits
+flat at 0.70 for the next ~22,000 years (profiles 13-41) before
+compressional heating starts consuming it -- picking the *first*
+occurrence (profile 13) is still a physically valid pristine
+composition, but leaves the resulting trajectory needing to traverse
+~10,000+ physically near-inert years for no benefit even with a tight
+`rtol` (confirmed: both the literal first occurrence and a 0.1%
+tolerance still exhaust ReacNetJl's `max_steps` in the millions before
+converging).
+
+The default `rtol=5e-3` (0.5%) was chosen empirically from this run: h1
+does not decline monotonically once heating starts -- it visibly
+oscillates (0.694, 0.695, 0.694, 0.697, ...) over the final ~1.5 years
+before peak, consistent with intermittent convective overturn pulses
+still bringing some fresh H down to this coordinate even as burning
+consumes it. `findlast` at 0.5% lands on the *last* such upward wobble,
+which happens to sit right at the edge of the explosive rise -- cutting
+the remaining trajectory span from ~10,000 years to ~1.5 years (about
+4 orders of magnitude), the difference between the solver not
+converging and converging.
 """
-function pristine_profile_number(run::MesaRun, mass_coordinate::Real; rtol::Real=1.0e-3)
+function pristine_profile_number(run::MesaRun, mass_coordinate::Real; rtol::Real=5.0e-3)
     pidx = profiles_index(run)
     sort!(pidx, :model_number)
     profile_numbers = Int[]
@@ -319,9 +330,10 @@ End-to-end bridge from a MESA run to a ReacNetJl post-processing result:
 result)` so callers know which zone/time window the returned abundances
 describe, not just the final numbers.
 """
-function postprocess_trajectory(run::MesaRun; output_dir::AbstractString, rates::Symbol=:starlib, kwargs...)
+function postprocess_trajectory(run::MesaRun; output_dir::AbstractString, rates::Symbol=:starlib,
+    pristine_rtol::Real=5.0e-3, kwargs...)
     peak = peak_temperature_zone(run)
-    pn = pristine_profile_number(run, peak.mass_coordinate)
+    pn = pristine_profile_number(run, peak.mass_coordinate; rtol=pristine_rtol)
     abund = zone_initial_abundances(run, pn, peak.mass_coordinate)
 
     hist = history(run).data
@@ -340,7 +352,21 @@ function postprocess_trajectory(run::MesaRun; output_dir::AbstractString, rates:
     write_trajectory_file(traj_path, traj.time_s, traj.T9, traj.rho)
     write_initial_abundance_file(abund_path, abund)
 
-    result = ReacNetJl.run_ppn(traj_path, abund_path; rates=rates, output_dir=output_dir, kwargs...)
+    # run_ppn's own dt_max default is duration>100s ? 20.0 : 0.05 (seconds) --
+    # a heuristic clearly tuned for hours-to-days-scale nova trajectories.
+    # Ours spans up to ~years (this run's tracked zone has a slow pre-peak
+    # buildup on top of the fast burst itself), so that 20s ceiling forces
+    # well over 2e6 steps just to traverse the quiet stretches at maximum
+    # stride -- already past max_steps before any physics-driven shrinking
+    # during the actual burst. Scale dt_max to this trajectory's own
+    # duration instead, letting max_fractional_change (not this ceiling)
+    # be what controls resolution during the fast phase. An explicit
+    # `dt_max` in kwargs still wins (merge order below).
+    duration = traj.time_s[end] - traj.time_s[1]
+    default_dt_max = max(20.0, duration / 500)
+    run_ppn_kwargs = merge((dt_max=default_dt_max,), NamedTuple(kwargs))
+
+    result = ReacNetJl.run_ppn(traj_path, abund_path; rates=rates, output_dir=output_dir, run_ppn_kwargs...)
     return (mass_coordinate=peak.mass_coordinate, trajectory=traj, initial_abundances=abund, result=result)
 end
 

@@ -2,13 +2,15 @@ module QuiescentContinuum
 
 using DataFrames
 using ..MesaIO
+using ..TrajectoryPostProcessing: _linterp
 
-export PlanckSource, wd_quiescent_source, spectral_luminosity_ev, photon_energy_grid_ev
+export PlanckSource, wd_quiescent_source, wd_photosphere_at, spectral_luminosity_ev, photon_energy_grid_ev
 
 const H_ERG_S = 6.62607015e-27     # erg s (exact, 2019 SI)
 const K_B_ERG_K = 1.380649e-16     # erg/K (exact, 2019 SI)
 const C_CM_S = 2.99792458e10       # cm/s (exact)
 const EV_TO_ERG = 1.602176634e-12  # erg/eV (exact)
+const YEAR_S = 365.25 * 24 * 3600
 
 """
     PlanckSource(teff_K, radius_cm)
@@ -29,18 +31,61 @@ end
 """
     wd_quiescent_source(run::MesaRun; history_row=1) -> PlanckSource
 
-The WD's own quiescent photosphere, read directly from MESA's history
-data (`log_Teff`, `radius_cm`) -- unlike the companion, this is not an
-external assumption, since MESA already models the WD surface. Defaults
-to `history_row=1` (the first saved model, i.e. before the TNR); pass a
-later row to see how the WD's own photosphere evolves (e.g. its
-post-burst re-expansion, before ejecta-related effects dominate).
+The WD's own photosphere at one fixed saved row, read directly from
+MESA's history data (`log_Teff`, `radius_cm`) -- unlike the companion,
+this is not an external assumption, since MESA already models the WD
+surface. Defaults to `history_row=1` (the first saved model, i.e.
+before the TNR). For a continuously time-evolving version (needed to
+actually see the WD's photosphere move through the flash/decline/SSS
+phases rather than a single snapshot), use [`wd_photosphere_at`](@ref).
 """
 function wd_quiescent_source(run::MesaRun; history_row::Integer=1)
     h = history(run).data
     teff_K = 10.0^h.log_Teff[history_row]
     radius_cm = h.radius_cm[history_row]
     return PlanckSource(teff_K, radius_cm)
+end
+
+"""
+    wd_photosphere_at(run::MesaRun, t_star_age_s::Real) -> PlanckSource
+
+The WD's own photosphere at an arbitrary time `t_star_age_s` (seconds,
+`star_age` convention), linearly interpolated from MESA's `log_Teff`/
+`radius_cm` history columns -- the time-dependent generalization of
+[`wd_quiescent_source`](@ref)'s single fixed snapshot.
+
+This single function is what carries the blackbody continuum through
+several of the phases in the nova's real multi-wavelength timeline
+(Chomiuk, Metzger & Shen 2021, "New Insights into Classical Novae",
+Fig. 1), because MESA's own `log_Teff`/`radius_cm` history already
+contains that physics without any new modeling: quiescence (this run's
+own pre-TNR Teff ~ 3-4e4 K); the envelope inflating during the TNR
+flash and mass ejection (radius grows by ~10^4-10^5x while Teff *drops*,
+since L = 4 pi R^2 sigma T^4 and R grows faster than L -- the
+optical/UV "fireball" phase); and the post-burst recontraction, where
+radius falls back and Teff climbs again, in this run's own data
+reaching > 6e5 K -- physically the supersoft X-ray source (SSS) phase:
+at that temperature the Planck peak (`E_peak ~= 2.82 kT`) sits at
+~140 eV, squarely in the SSS energy range, purely as a consequence of
+sampling the same blackbody model this run's `radius_cm`/`log_Teff`
+already describe, continuously instead of at one row.
+
+Does NOT model dust formation, line opacity, deviations from a pure
+blackbody, or (for the optically-thick-wind phase specifically) the
+distinction between the true photosphere and MESA's outer boundary
+condition -- treat this as the same-fidelity "what does the photosphere
+look like" baseline `wd_quiescent_source` already was, just no longer
+frozen in time.
+"""
+function wd_photosphere_at(run::MesaRun, t_star_age_s::Real)
+    h = history(run).data
+    order = sortperm(h.star_age)
+    age_s = h.star_age[order] .* YEAR_S
+    teff_K = 10.0 .^ h.log_Teff[order]
+    radius_cm = h.radius_cm[order]
+    teff = _linterp(age_s, teff_K, t_star_age_s)
+    r = _linterp(age_s, radius_cm, t_star_age_s)
+    return PlanckSource(teff, r)
 end
 
 """

@@ -72,7 +72,7 @@ export read_mass_fraction_history, extended_decay_rate_per_gram,
 include("QuiescentContinuum.jl")
 using .QuiescentContinuum
 export QuiescentContinuum
-export PlanckSource, wd_quiescent_source, spectral_luminosity_ev, photon_energy_grid_ev
+export PlanckSource, wd_quiescent_source, wd_photosphere_at, spectral_luminosity_ev, photon_energy_grid_ev
 
 include("SpectralEvolution.jl")
 using .SpectralEvolution

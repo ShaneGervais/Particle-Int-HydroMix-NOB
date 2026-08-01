@@ -65,10 +65,17 @@ end
 
 # --- Continua: WD (+ placeholder companion) and shock channels ---------
 
-wd = wd_quiescent_source(run)
+# Time-dependent WD photosphere, not a single frozen snapshot: MESA's own
+# log_Teff/radius_cm history already carries the WD's surface through
+# quiescence, the TNR flash/envelope inflation, and the post-burst
+# recontraction back to a hot, compact, supersoft-X-ray-like state (this
+# run's own data reaches Teff > 6e5 K, Wien peak ~140 eV) -- see
+# wd_photosphere_at's own docstring for the physical picture. The
+# companion stays static: nothing in this run models binary irradiation.
 companion = PlanckSource(4000.0, 3.0e10)  # generic cool-dwarf placeholder -- adjust to your system
 continua = ContinuumChannel[
-    ContinuumChannel("WD + companion photosphere", (t, E) -> spectral_luminosity_ev([wd, companion], E)),
+    ContinuumChannel("WD photosphere (flash/decline/SSS) + companion",
+        (t, E) -> spectral_luminosity_ev([wd_photosphere_at(run, t), companion], E)),
 ]
 
 shock_p = calibrate_shock_params(run; ignition_mass_coordinate=peak.mass_coordinate)
@@ -106,10 +113,32 @@ push!(continua, ContinuumChannel("Shock GeV gamma-rays (pion decay)", shock_gamm
 
 # --- Build the timeline --------------------------------------------------
 
+# Log-spaced around t_shock_onset_s (burst peak), not uniform-by-index
+# over the saved history rows. MESA's saved ages are extremely densely
+# packed near the burst (the same clustering pristine_profile_number's
+# tie-break has to account for) -- uniform-by-index sampling spent
+# nearly the whole frame budget inside that dense cluster and gave the
+# multi-millennium quiescent baseline almost no screen time. Composing
+# the spectrum at an arbitrary time doesn't require a saved row to exist
+# there (LineChannel rates are interpolated, ContinuumChannel closures
+# are evaluated directly -- see SpectralEvolution.jl), so nothing stops
+# sampling on whatever time grid best represents the story: like the
+# real observational picture for a nova's multi-wavelength evolution
+# (e.g. Chomiuk, Metzger & Shen 2021, "New Insights into Classical
+# Novae", Fig 1), that's log(time since eruption), not linear absolute
+# time. This grid is symmetric-log around t_shock_onset_s: dense near
+# peak (captures the TNR flash and the day-to-week shock/outflow
+# activity), sparse far from it on both sides (the multi-millennium
+# quiescent past and the ~1.5 yr post-burst decline this run covers).
 hist = history(run).data
-ages_s = sort(unique(hist.star_age)) .* YEAR_S
-n_frames = min(length(ages_s), 200)  # subsample for a manageable movie length
-frame_ages = ages_s[round.(Int, range(1, length(ages_s); length=n_frames))]
+age_min_s = minimum(hist.star_age) * YEAR_S
+age_max_s = maximum(hist.star_age) * YEAR_S
+n_frames = 200
+n_pre = n_frames ÷ 2
+n_post = n_frames - n_pre
+pre_ages = t_shock_onset_s .- exp.(range(log(t_shock_onset_s - age_min_s), log(1.0); length=n_pre))
+post_ages = t_shock_onset_s .+ exp.(range(log(1.0), log(age_max_s - t_shock_onset_s); length=n_post))
+frame_ages = vcat(pre_ages, post_ages)
 
 energy_grid_ev = photon_energy_grid_ev(1.0e-2, 1.0e10; n=150)  # 0.01 eV (radio-ish) to 10 GeV
 
@@ -123,7 +152,11 @@ ax = Axis(fig[1, 1], xscale=log10, yscale=log10,
     xlabel="Photon/neutrino energy [eV]", ylabel="Spectral luminosity [erg/s/eV]  (lines: rate x 1 eV placeholder height)",
     title="Nova multi-messenger spectrum")
 xlims!(ax, 1.0e-2, 1.0e10)
-ylims!(ax, 1.0e10, 1.0e40)
+# 1e46, not 1e40: the WD photosphere briefly exceeds the old ceiling
+# during/just after the burst -- consistent with the super-Eddington
+# wind episodes MESA's own log reports for this run (L/L_Edd up to
+# ~3.45), not a bug, but the old fixed ceiling was clipping real signal.
+ylims!(ax, 1.0e10, 1.0e46)
 
 # Observable-backed plot data: this is the pattern `record` actually
 # needs to redraw each frame (directly reassigning a plot object's [i]
@@ -140,6 +173,28 @@ scatter!(ax, line_E_obs, line_R_obs; markersize=12, color=:black, label="decay/n
 axislegend(ax; position=:lt, labelsize=10)
 time_label = Label(fig[0, 1], "")
 
+"""
+Human-scaled relative-time string: seconds near `dt_s=0`, growing to
+hours/days/years as `|dt_s|` grows. A single fixed unit (e.g. always
+years) either loses all resolution during the seconds-to-days burst
+dynamics or is unreadably large during the multi-year quiescent
+baseline -- this is the same "pick units matched to the scale you're
+actually looking at" logic as `TrajectoryPostProcessing`'s log-spaced
+time sampling, applied to display rather than solver stepping.
+"""
+function format_relative_time(dt_s::Real)
+    adt = abs(dt_s)
+    if adt < 3600
+        return @sprintf("%+.4g s", dt_s)
+    elseif adt < 86400
+        return @sprintf("%+.4g hr", dt_s / 3600)
+    elseif adt < YEAR_S
+        return @sprintf("%+.4g days", dt_s / 86400)
+    else
+        return @sprintf("%+.4g yr", dt_s / YEAR_S)
+    end
+end
+
 record(fig, joinpath(OUTPUT_DIR, "spectrum_movie.mp4"), timeline; framerate=12) do snap
     for i in eachindex(continua)
         continuum_L_obs[i][] = max.(snap.continuum_L_ev[i, :], 1e-30)
@@ -147,7 +202,8 @@ record(fig, joinpath(OUTPUT_DIR, "spectrum_movie.mp4"), timeline; framerate=12) 
     nonzero = snap.line_rates .> 0
     line_E_obs[] = snap.line_energies_ev[nonzero]
     line_R_obs[] = max.(snap.line_rates[nonzero], 1e10)
-    time_label.text[] = @sprintf("star_age = %.4g yr", snap.age_s / YEAR_S)
+    dt = snap.age_s - t_shock_onset_s
+    time_label.text[] = @sprintf("star_age = %.10g yr   (t - t_peak = %s)", snap.age_s / YEAR_S, format_relative_time(dt))
 end
 
 println("\nWrote ", joinpath(OUTPUT_DIR, "spectrum_movie.mp4"))

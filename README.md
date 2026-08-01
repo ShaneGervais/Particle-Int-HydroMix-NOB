@@ -1,310 +1,251 @@
-# Nova Outburst Messenger-Physics Pipeline
+# Particle-Int-HydroMix-NOB
 
-## Context
+**What can the particles coming off an exploding star tell us about what's happening inside it?**
 
-The goal is to understand what information particle "messengers" (neutrinos,
-positrons/annihilation photons, radioactive-decay gamma-ray lines, and
-eventually the optical/UV light curve) carry away from a classical nova
-thermonuclear runaway (TNR) about the underlying nuclear burning, convective
-mixing, and white dwarf (WD) properties that produced them — and how their
-interactions during transport (Compton scattering, absorption, annihilation,
-free-streaming) reshape that information before it's observable at Earth.
+This project simulates a classical nova — a thermonuclear explosion on the surface of a white dwarf star — and asks: if you could detect every kind of particle it sends out (light of every wavelength, neutrinos, cosmic rays), what would each one tell you, and when? Different particles come from different depths, different moments, and travel through the exploding star differently before they escape. The goal is to build the whole chain, from the explosion itself to the signal an observer would actually see, and watch how that signal changes over the seconds-to-years the event actually takes.
 
-MESA (already installed at `~/mesa-25.12.1`, SDK at `~/mesasdk`, confirmed
-working) will do the hydrodynamics, convective mixing, and nuclear-network
-integration — reusing decades of validated stellar-evolution physics rather
-than reimplementing it. MESA ships a ready-to-run `wd_nova_burst` test case
-(1.1 Msun CO WD, accreting H/He at 1e-9 Msun/yr through one full TNR cycle,
-~586s runtime) that already has a populated `LOGS/` output from a prior run
-and a small existing edit in `inlist_pgstar`, so this is a live, in-progress
-starting point, not a cold install.
+This README explains the physics in plain language, gives the equations the code actually uses, and shows how the pieces fit together and how to run them.
 
-Julia's job is everything downstream and novel: reading MESA's output,
-computing what particles those nuclear reactions actually produce, modeling
-whether those particles escape freely or interact first, and synthesizing the
-resulting "observed" messenger signals. This is a fresh, standalone Julia
-package — no other project directories are referenced or reused for
-conventions.
+---
 
-Confirmed decisions: (1) NuPPN (NuGrid) will be used as a **trajectory
-post-processor** — MESA keeps its small live network for the hydro solve,
-and representative T/rho/time histories of burning zones get fed through
-NuPPN's larger network afterward to recover isotopes MESA's live net doesn't
-track (22Na, 26Al, 7Be, etc.), which is the standard approach in the nova
-nucleosynthesis literature. (2) Phase 0 targets the CO WD baseline first,
-since it's runnable today and lets the whole pipeline (Phase 1-4) get built
-and validated against fast beta+ messengers before the ONe/22Na/26Al work.
+## 1. The physics story
 
-## Directory layout
+A classical nova happens in a **binary star system**: a white dwarf (the compressed, burned-out core of a dead star) orbiting closely with a normal companion star. Gas slowly leaks off the companion and piles up on the white dwarf's surface. That gas — mostly hydrogen — gets squeezed by the white dwarf's enormous gravity until, after thousands of years of quiet accumulation, it ignites all at once. That's the nova.
+
+Here's what happens, in order, and what each stage sends out:
+
+1. **Quiescence** (thousands of years). Nothing dramatic — just the white dwarf and its companion, each glowing faintly at their own temperature. This is the baseline "before" picture.
+2. **Thermonuclear runaway (TNR)** (minutes to hours). The hydrogen layer ignites. It's so deeply buried that light can't escape yet — but **neutrinos** can, instantly and without being altered. They are the one messenger that comes straight from the burning region with no distortion.
+3. **The flash and envelope expansion** (hours to days). The energy release blows the envelope up to huge size. As it expands, its surface cools even as its total energy output rises — this is the classical "nova reaching optical maximum."
+4. **Shocks** (days to weeks). The star doesn't eject material smoothly — it throws off a slower shell first, then a faster wind that catches up and rams into it. Where they collide, particles get accelerated to enormous energies, producing gamma-rays and X-rays that have nothing to do with the nuclear burning itself.
+5. **Decline and freeze-out** (weeks to years). As the ejected gas thins out, it becomes transparent to gamma-ray light from the decay of longer-lived radioactive isotopes made during the burning. The white dwarf's own surface, now exposed, can be hot enough to shine in soft X-rays for a while — the "supersoft X-ray source" phase.
+6. **Back to quiescence** (years later). The burning stops, the white dwarf cools, and the system returns to where it started, waiting to do it again.
+
+The project's job is to model the source of each of these signals, how each one is reshaped (or not) on its way out, and stitch them into one evolving picture — literally a movie of the spectrum changing over the nova's whole lifetime.
+
+---
+
+## 2. Three tools, one pipeline
+
+No single tool does all of this, so the project chains three together:
+
+```
+   MESA                    ReacNetJl                  NovaMessengers
+(hydrodynamics +     -->  (nuclear network      -->   (turns all of the
+ basic nuclear            post-processing:            above into particle
+ network)                 recovers isotopes           messengers and an
+                           MESA's own small             observable spectrum)
+                           network doesn't track)
+```
+
+- **MESA** simulates the actual physics of the star: gravity, pressure, convection, and a *small* nuclear reaction network good enough to get the hydrodynamics right. It produces a time history of every zone of the star (temperature, density, composition, radius, luminosity...).
+- **ReacNetJl** takes a single zone's temperature/density history from MESA and re-runs it through a *much larger* nuclear reaction network, recovering isotopes MESA's own small network doesn't bother tracking (like ²²Na, ²⁶Al, ⁷Be) — these matter for gamma-ray astronomy even though they're irrelevant to the hydrodynamics.
+- **NovaMessengers** (this repository's Julia package, `NovaMessengers/`) takes the output of both and answers the actual science question: what particles come out, do they escape or get absorbed on the way, and what does the resulting signal look like at any given moment?
+
+---
+
+## 3. The physics and equations
+
+Every equation below is implemented in the code (file names given) with the same notation, so you can go read the actual implementation once the idea makes sense.
+
+### 3.1 Radioactive decay — the core "messenger" mechanism
+
+Most of what NovaMessengers tracks comes from unstable isotopes made during the explosion decaying away afterward. Each decay releases:
+- a **neutrino** (always escapes, see below),
+- usually a **positron**, which immediately annihilates with an electron and makes two 511 keV gamma-ray photons,
+- sometimes a **gamma-ray line** at a specific energy, if the decay leaves the daughter nucleus in an excited state that then relaxes by emitting a photon.
+
+The number of undecayed nuclei falls off exponentially:
+
+```
+N(t) = N0 * exp(-lambda * t)          lambda = ln(2) / half-life
+```
+
+so the rate of decays (= the rate of messenger emission) at any instant is just:
+
+```
+decay_rate(t) = lambda * N(t)
+```
+
+Two isotopes matter differently here: ⁷Be decays purely by *electron capture* — no positron at all, so it contributes zero to the 511 keV line, only to the neutrino signal and a weak 478 keV gamma line. ²²Na and ²⁶Al are a mix of positron decay and electron capture. The code tracks each isotope's `positron_branching` and `gamma_branching` explicitly rather than assuming "one positron per decay" for everything.
+
+*Code:* `NuclearDecay.jl` (decay constants, branching ratios), `MessengerProduction.jl` and `ExtendedMessengers.jl` (turning decay rates into positron/neutrino/gamma production rates).
+
+### 3.2 Neutrinos — the one undistorted messenger
+
+A neutrino's mean free path through the star is enormously larger than the star itself, so:
+
+```
+P_escape(neutrino) = 1, always
+```
+
+Whatever rate of neutrinos gets produced *is* exactly the rate an observer would see (if anyone could actually build a detector sensitive enough — in reality nobody can, for a nova this far away, but it's the perfect "ground truth" signal to compare everything else against). No other messenger in this project has that property.
+
+*Code:* `Transport.jl`.
+
+### 3.3 Gamma-rays — escape is a fight against absorption
+
+Unlike neutrinos, gamma-ray photons *do* interact with the gas around them — mostly through Compton scattering off electrons. The probability a photon born at some depth actually escapes depends on how much material is between it and the surface:
+
+```
+tau(zone) = integral of (density * opacity) from that zone out to the surface
+P_escape(zone) = exp(-tau(zone))
+```
+
+The opacity itself depends on photon energy through the Klein-Nishina formula (the quantum-mechanically correct version of Compton scattering, which becomes energy-dependent above ~511 keV):
+
+```
+kappa(E) = kappa_Thomson * [sigma_KN(E) / sigma_Thomson]
+kappa_Thomson = 0.2 * (1 + X)      (X = hydrogen mass fraction)
+```
+
+This is why a 511 keV line and a 1.275 MeV line, produced at the same depth, don't escape with the same probability, and why gamma-ray lines characteristically switch on late — only once the ejecta has expanded and thinned out enough for `tau` to drop below 1.
+
+*Code:* `Transport.jl` (`klein_nishina_factor`, `compton_opacity`, `optical_depth_gamma`, `escape_probability_gamma`).
+
+### 3.4 The white dwarf's own light — a simple glowing sphere
+
+Both the white dwarf and its companion star emit light because they're hot, the same way a hot piece of metal glows. That's blackbody (Planck) radiation:
+
+```
+B_nu(T) = (2 h nu^3 / c^2) / (exp(h nu / kT) - 1)      (energy per area per solid angle per frequency)
+L_E(E)  = 8 pi^2 R^2 E^3 / (h^3 c^2 [exp(E/kT) - 1])   (converted to energy per second per unit photon energy)
+```
+
+The remarkable thing is that MESA's own simulation already tracks the white dwarf's temperature and radius through the *entire* event — quiescent (~30,000 K), then swelling and cooling during the explosion, then shrinking back down to a small, extremely hot state afterward (this run reaches over 600,000 K) that's actually the physical origin of the observed "supersoft X-ray" phase real novae show. One formula, sampled at different times, covers four different phases of the nova's life.
+
+*Code:* `QuiescentContinuum.jl` (`spectral_luminosity_ev`, `wd_photosphere_at`).
+
+### 3.5 Shocks — a second, independent messenger channel
+
+A nova doesn't eject its material in one smooth puff. A slower shell leaves first; a faster wind follows and catches up to it. Where they collide, a shock forms, and shocks can accelerate a small fraction of particles to very high energies — completely unrelated to the nuclear burning that made the isotopes above. This project uses a published model (Diesing & Metzger 2026 — see references) for that shock physics. A few of the key relationships:
+
+```
+wind mass-loss rate:   Mdot_w(t) = (M_env / tau) * exp(-t/tau)
+shock velocity:        v_sh = v_wind / 2   (momentum-conserving collision)
+shock temperature:     T_sh = (3 * m_proton / 16 k_B) * v_sh^2
+cosmic-ray luminosity: L_CR = xi_CR * L_shock
+gamma-ray luminosity:  L_gamma ~= f_Omega * xi_CR * kappa * L_shock   (calorimetric limit)
+```
+
+The accelerated protons collide with other protons in the shocked gas and produce pions, which decay into the GeV gamma-rays real nova telescopes (like Fermi-LAT) actually detect. The same hot, shocked gas also glows via ordinary thermal bremsstrahlung ("braking radiation" from electrons deflected by ions):
+
+```
+bremsstrahlung emissivity:  epsilon_ff(nu) = 6.8e-38 * Z^2 * n_e * n_i * T^(-1/2) * exp(-h*nu/kT) * gaunt_factor
+```
+
+*Code:* `ShockAcceleration.jl` — every equation in this module cites its equation number from the source paper directly in the code comments, so cross-referencing is straightforward.
+
+### 3.6 Reaction energetics — bookkeeping the nuclear energy budget
+
+Each nuclear reaction releases (or, rarely, absorbs) a specific amount of energy, computed from the difference in nuclear mass between what goes in and what comes out:
+
+```
+Q = (mass of reactants) - (mass of products)     [converted to energy via E=mc^2]
+```
+
+This is used mainly as a cross-check: sum up the energy released by every tracked reaction, zone by zone, and it should account for a specific (traceable) fraction of the total nuclear energy generation MESA reports on its own.
+
+*Code:* `ReactionEnergetics.jl`.
+
+---
+
+## 4. Code map
 
 ```
 Particle-Int-HydroMix-NOB/
-├── README.md                      # science motivation, how the two halves relate
-├── .gitignore
-├── mesa_work/                     # copied MESA work dirs (never edit the install itself)
-│   └── wd_nova_burst_co/          # Phase 0: copy of the CO/cno_extras test case
-└── NovaMessengers/                # new Julia package (name is a placeholder, easy to rename)
-    ├── Project.toml
+├── mesa_work/wd_nova_burst_co/     # the MESA simulation itself (1.1 Msun CO white dwarf)
+└── NovaMessengers/                 # the Julia package that does everything downstream
     ├── src/
-    │   ├── NovaMessengers.jl
-    │   ├── MesaIO.jl          # Phase 1
-    │   ├── NuclearDecay.jl    # Phase 2a
-    │   ├── MessengerProduction.jl  # Phase 2b
-    │   ├── Transport.jl       # Phase 3
-    │   └── SignalSynthesis.jl # Phase 4
-    ├── test/
-    │   ├── Project.toml
-    │   ├── runtests.jl
-    │   └── data/               # small truncated real MESA output samples
-    └── examples/
+    │   ├── MesaIO.jl                    # reads MESA's output files
+    │   ├── NuclearDecay.jl              # half-lives, branching ratios for every tracked isotope
+    │   ├── MessengerProduction.jl       # decay/positron/gamma rates for MESA's own 7 tracked isotopes
+    │   ├── Transport.jl                 # neutrino (trivial) and photon (Compton) escape
+    │   ├── ReactionEnergetics.jl        # per-reaction energy bookkeeping
+    │   ├── SignalSynthesis.jl           # combines production + transport into light curves
+    │   ├── ShockAcceleration.jl         # the Diesing & Metzger shock/cosmic-ray/gamma-ray model
+    │   ├── TrajectoryPostProcessing.jl  # bridges a MESA zone to ReacNetJl and back
+    │   ├── ExtendedMessengers.jl        # decay/gamma rates for ReacNetJl's extra isotopes (22Na, 26Al, 7Be)
+    │   ├── QuiescentContinuum.jl        # the white dwarf's and companion's own blackbody light
+    │   └── SpectralEvolution.jl         # composites every channel above into one spectrum per moment
+    ├── examples/
+    │   ├── trajectory_postprocessing.jl # runs MESA -> ReacNetJl
+    │   └── spectrum_movie.jl            # runs everything -> an animated spectrum movie
+    └── test/                            # unit tests
 ```
 
-git-init at the repo root. `.gitignore` for `mesa_work/*`: `LOGS/`, `photos/`,
-`make/*.o`, `make/*.mod`, `make/*.smod`, `restart_photo`, the compiled `star`
-binary, and regenerable `.mod` snapshots — but track all inlists,
-`src/run_star_extras.f90`, `history_columns.list`, `profile_columns.list`,
-the seed model file, and the `mk`/`rn`/`clean`/`re`/`ck` scripts.
+---
 
-## Phase 0: working baseline (MESA side)
+## 5. Running it
 
-1. `cp -r ~/mesa-25.12.1/star/test_suite/wd_nova_burst mesa_work/wd_nova_burst_co`
-   — never edit the MESA install directly.
-2. `./clean && ./mk` inside the copy to confirm it rebuilds standalone.
-3. Two inlist edits before the first fresh run (both in `&controls`):
-   - `history_interval = 1` (currently 5) — near burst peak, individual
-     timesteps shrink to ~5-60s, which is already comparable to o14/f17
-     half-lives, so interval-5 sampling is too coarse to resolve them.
-   - Add `total_mass n13`, `total_mass o14`, `total_mass o15`,
-     `total_mass f17`, `total_mass f18`, `total_mass ne18`,
-     `total_mass ne19` to `history_columns.list` — this file already has
-     `total_mass h1`/`total_mass he4` enabled and documents "as many as
-     desired," so this needs zero Fortran changes and turns per-isotope
-     abundance tracking (needed for Phase 2) from "needs custom hooks" into
-     "already in history.data."
-4. Lower `profile_interval` from 50 to ~5-10 for Phase 3's spatial/optical-
-   depth needs (cheap: profiles are a few MB each).
-5. **ne18 exception**: its half-life (1.7s) is shorter than a single MESA
-   hydro timestep near burst peak, so it's in secular equilibrium within
-   each saved step — finite-differencing its abundance won't recover a real
-   production rate. No custom Fortran needed for this after all: MESA
-   already exposes named per-reaction rates as profile columns
-   (`screened_rate <name>` / `raw_rate <name>`, in reactions/second,
-   computed internally as `s% screened_rate(i,k) * s% dm(k)` — already
-   integrated over each zone's mass). Added `screened_rate r_f17_pg_ne18`
-   and `raw_rate r_f17_pg_ne18` to `profile_columns.list` directly, which
-   gives the ne18 production rate (nuclei/second per zone) with zero
-   Fortran-side work.
-6. Rerun (~10 min), confirm the new columns show a clean rise/decay through
-   the burst window.
+```bash
+# One-time setup
+cd /home/sgervais/Documents/Particle-Int-HydroMix-NOB
+julia --project=NovaMessengers -e 'using Pkg; Pkg.develop(path=expanduser("~/Documents/ReacNetJl")); Pkg.instantiate()'
 
-### Build notes (this host)
+# 1. MESA hydro simulation (optional to rerun -- LOGS/ from a prior run is already valid)
+source mesa_work/env.sh
+cd mesa_work/wd_nova_burst_co && ./rn && cd ../..
 
-This test case is compiled with `pgstar_flag = .true.` by default, which
-links against the SDK's `libpgplot.so` regardless of the runtime flag value
-(pgstar controls whether it's *invoked*, not whether it's *linked*). Two
-environment-specific fixes were needed to get a working build here, both
-already applied in this copy:
+# 2. ReacNetJl post-processing: recover isotopes beyond MESA's own small network
+julia --project=NovaMessengers NovaMessengers/examples/trajectory_postprocessing.jl
 
-- `mesa_work/env.sh` exports `MESA_DIR`/`MESASDK_ROOT` and sources
-  `mesasdk_init.sh` — `.bashrc` only sets `MESA_DIR`, not the SDK env.
-  Source it before any MESA build/run command:
-  `source mesa_work/env.sh`.
-- `mesa_work/wd_nova_burst_co/make/makefile` sets
-  `LOAD_EXTRAS = -L/usr/lib/x86_64-linux-gnu -lX11 -lxcb -lXau -lXdmcp -lrt -ldl -lpthread`.
-  The SDK's bundled `ld` doesn't auto-resolve pgplot's transitive X11/xcb
-  dependencies on this host even though the libraries are present
-  system-wide, so they need to be listed explicitly.
-- `pgstar_flag` is set to `.false.` in `inlist_wd_nova_burst` for headless
-  batch runs (no `DISPLAY` here). This doesn't affect `LOGS/` output at all
-  — live plotting is separate from data output, and `plot.py` (via
-  `mesa_reader`) or `NovaMessengers` can still make static plots from
-  `history.data`/`profile*.data` afterward.
+# 3. NovaMessengers: build the full multi-messenger spectrum movie
+julia --project=NovaMessengers NovaMessengers/examples/spectrum_movie.jl
+# -> NovaMessengers/examples/plt_out/spectrum_movie.mp4
+```
 
-## Phase 1: Julia MESA-output reader
+---
 
-MESA's `history.data`/`profile*.data` format: line 1 = numeric column-index
-row (ignorable), line 2 = header field names, line 3 = header field values
-(mixed quoted strings/floats), line 4 = blank, line 5 = numeric column-index
-row (ignorable), line 6 = main-table column names, line 7+ = whitespace-
-delimited data rows. Files are MB-scale (hundreds of rows x ~70-100
-columns) — no need for a streaming parser.
+## 6. What's not built yet
 
-- Hand-write the small 6-line header parser, then use `CSV.jl`/`DataFrames.jl`
-  (`delim=' ', ignorerepeated=true`) for the bulk row parsing.
-- `read_history(path) -> (header::NamedTuple, data::DataFrame)`
-- `read_profile(path) -> (header::NamedTuple, data::DataFrame)` — profile
-  zones are numbered from 1 at the **surface**, not the center.
-- `read_profiles_index(dir)` — parses `LOGS/profiles.index` to map profile
-  files to model number/age via a join against `history.data`.
-- A `MesaRun` struct bundling a work-dir path + lazily-loaded history/
-  profiles, designed to support multiple runs from day one (needed later for
-  Phase 4 parameter sweeps).
-- Column indices always resolved from the file's own header row into a
-  name→index map — never hardcoded by position, since enabled columns (and
-  therefore column count) change with `history_columns.list`/
-  `profile_columns.list` and the active net.
+Two phases of a real nova's life are deliberately not modeled yet, because doing them correctly needs more reading first rather than guessing at the physics:
 
-## Phase 2: particle production
+- **Dust formation.** Some novae go dim in visible light for a while a few months in, because dust condenses in the cooling ejecta and blocks the view, while glowing brightly in infrared instead.
+- **Radio emission.** The expanding, ionized gas eventually becomes transparent at radio wavelengths too, and shocks can also produce non-thermal radio emission the same way they produce gamma-rays.
 
-MESA ships `~/mesa-25.12.1/data/rates_data/weak_info.list`, which has
-authoritative half-life and average-neutrino-energy (`Qneu`, MeV) values for
-exactly the 7 candidate messenger isotopes (n13, o14, o15, f17, f18, ne18,
-ne19) — the same table MESA itself uses internally. Freeze a copy into
-`data/weak_info_subset.csv` in the repo so the package doesn't require a
-MESA install at analysis time, and so the Julia physics stays numerically
-consistent with what this exact MESA version used (avoids two independent
-half-life tables silently disagreeing).
+Both are flagged as needing dedicated literature review before implementation — see the reference list below for the specific papers already identified as starting points.
 
-- **`NuclearDecay`**: `DecayIsotope(name, daughter, halflife_s, decay_const,
-  q_neu_mev, mode)` built from the frozen table. No MESA-run dependency —
-  independently unit-testable against literature half-lives.
-- **`MessengerProduction`** (depends on `MesaIO` + `NuclearDecay`): the
-  messenger emission rate is `decay_rate = lambda * N(t)`, directly — not a
-  finite-differenced "production" estimate. An earlier version tried to
-  reconstruct production by finite-differencing `total_mass_<iso>` and
-  correcting for decay alone, which conflated isotope *formation*
-  (proton/alpha capture) with isotope *decay* (the actual messenger-emitting
-  step) and silently ignored further consumption via proton capture — during
-  hot-CNO breakout burning, captures can outrun decay by orders of magnitude,
-  so that finite-difference estimate was wrong by up to ~100x for some
-  isotopes. Two independent, agreeing implementations now exist:
-  - `decay_rate(run, iso)`: whole-star, `history.data` cadence,
-    `lambda * isotope_number(run, iso)` from `total_mass_<iso>`.
-  - `reaction_decay_rate(run, iso)` / `zone_decay_rate(run, profile, iso)`:
-    whole-star / per-zone, `profile*.data` cadence, from each isotope's
-    single weak-decay reaction (`DECAY_REACTIONS`, e.g. `r_n13_wk_c13`) —
-    the zone-resolved form Phase 3's escape probability needs.
-  - Cross-validated against each other for all 7 isotopes: peak rates agree
-    to within ~10%, confirming both measure the same physical quantity via
-    independent code paths (mass bookkeeping vs local reaction rate).
-  - `FORMATION_REACTIONS` / `formation_rate` / `zone_formation_rate` are kept
-    as a **separate, genuinely different** quantity (isotope synthesis rate,
-    useful for nucleosynthesis-flow bookkeeping) — explicitly not used for
-    messenger rates, to avoid re-introducing the same conflation.
-  - `annihilation_photon_rate` = 2x positron rate (site-of-annihilation
-    question deferred to Phase 3).
-- **NuPPN trajectory extension**: for isotopes beyond the live net (22Na,
-  26Al, 7Be), extract T(t)/rho(t) histories for the burning zones from
-  Phase-1 profile data and hand them to NuPPN as fixed trajectories, rather
-  than expanding MESA's live network. This works independent of the Phase 0
-  CO-WD choice, but meaningful 22Na/26Al yields likely still require an ONe
-  WD trajectory (Ne-rich core dredge-up supplies the seed nuclei) — flagged
-  as a later phase once the CO-WD pipeline is validated end-to-end. Exact
-  NuPPN invocation (trajectory file format, network choice) to be worked out
-  when this phase starts, since it depends on the installed NuPPN version.
+There's also one physics limitation baked into the current pipeline worth understanding: `TrajectoryPostProcessing`/`ExtendedMessengers` follow only *one* representative zone of the star through ReacNetJl, not the whole envelope at once, so isotope abundances beyond MESA's own network describe "one representative parcel of gas," not a full spatial picture. This is standard practice in the nova nucleosynthesis literature, but it does mean some effects (e.g. the ²²Na/²⁶Al gamma-ray lines only becoming visible once ejecta far outside the tracked zone thin out) aren't fully captured by the current single-zone run.
 
-## Phase 3: transport/interaction
+---
 
-- **Neutrinos**: escape probability = 1, always — the Phase 2 production
-  rate *is* the observable signal, unmodified. This is a physics finding to
-  state explicitly (neutrinos are a direct real-time probe of the burning
-  zone), not just an implementation shortcut.
-- **Photons**: escape probability from local optical depth to a discrete
-  MeV-scale line photon, whose dominant interaction is Compton scattering
-  (roughly energy-independent above ~200 keV) — not the Rosseland-mean
-  opacity MESA's own `tau`/`log_opacity` columns represent (that's for the
-  thermal radiation field). Compute a separate
-  `tau_gamma(zone) = integral(rho * kappa_Compton, dr)` from MESA's
-  `logRho`/`radius`/`mass` structure with a fixed Compton opacity
-  (~0.2-0.4 cm^2/g), then `P_escape(zone) = exp(-tau_gamma(zone))`.
-- **Positrons**: stopping range is orders of magnitude shorter than a photon
-  mean free path, so default to "annihilate in-situ, then transport the
-  511 keV photons through the same Compton-escape machinery" — true
-  in-flight annihilation flagged as a later refinement.
-- Module layout: `Transport.jl` with clearly separate neutrino
-  (trivial pass-through) vs. photon/positron (Compton escape) code paths, so
-  the "neutrinos are physically different" decision stays visible in the
-  code structure rather than being hidden inside one generic function.
+## 7. References
 
-## Phase 4: signal synthesis
+**Simulation tools**
+- MESA (Modules for Experiments in Stellar Astrophysics) — the stellar evolution/hydrodynamics code. [docs.mesastar.org](https://docs.mesastar.org)
+- ReacNetJl — the nuclear reaction network post-processor (private repository, `~/Documents/ReacNetJl`).
 
-`SignalSynthesis` (depends on `MesaIO` + `NuclearDecay` + `MessengerProduction`
-+ `Transport`):
+**Physics papers used directly**
+- Diesing & Metzger (2026), "A Unified Model for Shock Interaction and gamma-Ray Emission in Classical Novae" — the source for every equation in `ShockAcceleration.jl`.
+- Chomiuk, Metzger & Shen (2021), "New Insights into Classical Novae," *Annual Review of Astronomy and Astrophysics* 59, 391. [arXiv:2011.08751](https://arxiv.org/abs/2011.08751) — the review whose Figure 1 phase timeline this project's spectrum movie is structured around.
 
-- `neutrino_lightcurve(run; isotopes)`: sum of Phase 2 `decay_rate` over
-  `isotopes` (default: all 7 tracked) vs. `star_age`, at `history.data`'s
-  full time cadence — neutrinos free-stream, so this *is* the observable
-  signal, undistorted by transport. `neutrino_energy_lightcurve` gives the
-  same thing in erg/second.
-- `gamma_lightcurve(run, line_energy_mev; isotopes)`: per-zone
-  `zone_annihilation_photon_rate` (summed over `isotopes`) weighted
-  zone-by-zone by Phase 3's `escape_probability_gamma`, summed over zones,
-  at each saved profile snapshot — coarser in time than the neutrino curve
-  (profile cadence, not every history row) since it needs the zone-resolved
-  structure Phase 3 depends on. `gamma_energy_lightcurve` gives erg/second.
-  Currently only 511 keV is physically populated (all 7 tracked isotopes
-  are beta+ emitters); other line energies work but are empty until the
-  NuPPN extension adds isotopes with their own lines (22Na 1.275 MeV, 26Al
-  1.809 MeV).
-- Validated against the real CO WD run: `gamma_lightcurve` is essentially
-  zero through the compact burst peak (envelope optical depth ~10^9, per
-  Phase 3) and only becomes clearly nonzero once the envelope has expanded
-  post-burst — a real result falling out of the pipeline, not an assumption,
-  and consistent with why real nova gamma-ray line detections lag the
-  optical peak by days-to-weeks. This test case's ~480-step window captures
-  the TNR and decline but not full homologous ejection, so the true
-  days-later turn-on isn't fully resolved yet — a natural target for a
-  longer or ejecta-focused follow-up run.
-- Full Doppler/line-broadening from ejecta velocity explicitly deferred.
-- Parameter sweeps (mixing efficiency, WD mass, CO vs ONe) require
-  additional MESA runs, not just more Julia analysis — `MesaRun` is designed
-  from the start (Phase 1) to support more than one run, so a sweep is just
-  adding sibling `mesa_work/` directories and re-running Phase 1-4 over each;
-  no batch-loader abstraction has been needed yet with a single run.
+**Identified for the not-yet-built dust and radio phases** (see `reference_dust_radio_nova_literature` project notes for the full annotated list):
+- Derdzinski, Metzger & Lazzati (2017), MNRAS 469, 1314 — dust formation in the dense shell behind an internal shock.
+- Hachisu, Kato & Matsumoto (2024), [arXiv:2402.08287](https://arxiv.org/abs/2402.08287) — a multiwavelength light-curve model reproducing simultaneous dust dips and supersoft X-rays.
+- Metzger, Hascoët, Vurm, Beloborodov, Chomiuk, Sokoloski & Nelson (2014), MNRAS 442, 713, "Shocks in nova outflows — I. Thermal emission" — thermal X-ray/optical/radio emission from the same shock geometry as the Diesing & Metzger model already implemented.
+- Weston et al. (2016), MNRAS 457, 887 — non-thermal (synchrotron) radio emission from the same colliding-flow shocks.
+- Chomiuk, Linford, Aydi et al. (2021), *ApJS* — a survey of 36 novae's radio light curves over five decades.
+- Seaquist & Palimaka (1977); Hjellming et al. (1979) — the foundational thermal free-free "expanding photosphere" model for nova radio emission.
 
-## Julia package tooling
+**Nuclear/atomic data**
+- Isotope half-lives, branching ratios, and neutrino energies: MESA's own `weak_info.list` for the 7 MESA-tracked isotopes; standard nuclear data compilations (ENSDF/NNDC-style) for ²²Na, ²⁶Al, ⁷Be beyond MESA's network (see `NuclearDecay.jl`'s own documentation for exact values and caveats).
 
-- One package: `Project.toml` + `src/` + `test/` + `examples/`.
-- Core deps: `DataFrames.jl`, `CSV.jl` (MESA output parsing), `Statistics.jl`,
-  a plotting package (`CairoMakie.jl` recommended — headless-friendly).
-  `Unitful.jl` is worth considering for the `NuclearDecay`/
-  `MessengerProduction` constants layer, since the pipeline spans
-  years-to-sub-second timescales and MeV-to-erg conversions.
-- `DifferentialEquations.jl`/SciML is **not needed**: MESA already performs
-  the hydro+network ODE integration, and Julia's role here is post-
-  processing MESA's output, not re-solving the nucleosynthesis ODEs.
-- Testing:
-  - `NuclearDecay` unit tests: parsed half-lives vs. literature/NNDC values.
-  - `MesaIO` integration tests against a small truncated real sample (can be
-    built today from the existing `wd_nova_burst/LOGS/history.data` and
-    `profile1.data`, no fresh run required).
-  - `MessengerProduction`/`Transport` unit tests: analytic checks (pure
-    exponential decay matches `N0*exp(-t/tau)`; escape probability -> 1 as
-    tau -> 0, -> 0 as tau -> infinity).
+---
 
-## Verification
+## 8. Things left to implement or fix
 
-1. **Energetics check**: integrate Phase 2 neutrino energy loss
-   (sum of decay_rate x Qneu) over the burst, compare to total nuclear
-   energy release (`10^log_Lnuc` integrated, already in history.data) —
-   should be a small but non-negligible fraction, consistent with hot-CNO
-   literature.
-2. **Internal MESA self-consistency check**: `eps_nuc` already has
-   reaction-neutrino losses folded in; the gap between a naive Q-value
-   energy-generation estimate (from the already-enabled `pp`/`cno`/
-   `tri_alpha` profile columns) and `eps_nuc` should match the independently
-   reconstructed neutrino-loss rate from Phase 2 — checkable from this exact
-   run with no external literature number needed, and should gate trust in
-   Phase 3/4 before going further.
-3. **Reproducibility**: since a valid `LOGS/` already exists from a prior
-   run, do the Phase 0/1 read-and-parse check against it first, and only
-   spend the ~10 minute rerun once the `history_interval`/`total_mass`
-   inlist edits are in place.
-4. **Gamma-line check (NuPPN phase)**: once 22Na/26Al are available, compare
-   predicted fluxes at a literature-typical distance against published nova
-   gamma-line predictions — order-of-magnitude agreement is the bar, given
-   Phase 3's first-order `exp(-tau)` transport.
+**New physics, needs literature research first (do not guess)**
+- [ ] **Dust/IR channel.** Candidate mechanism: Derdzinski, Metzger & Lazzati (2017) — dust nucleating in the dense shell behind an internal shock, same shock geometry as `ShockAcceleration.jl` already computes. Read at equation level before implementing.
+- [ ] **Radio channel**, two components: thermal free-free (classic Seaquist/Hjellming expanding-photosphere model) and non-thermal synchrotron (Weston et al. 2016, same colliding-flow shocks as the GeV channel). Metzger et al. (2014) is the strongest candidate for extending `ShockAcceleration.jl` to predict both self-consistently alongside the GeV/bremsstrahlung channels already there.
+- [ ] **Optical/UV line spectrum** (P Cygni profiles, forbidden emission lines). This is the single biggest realism gap relative to how real nova abundances are actually measured observationally — most published nova abundance results come from optical spectroscopy, not gamma-ray lines. Needs at least a basic line-formation/radiative-transfer approach, not just the blackbody continuum `QuiescentContinuum.jl` already provides.
 
-## Critical files
+**Known approximations worth revisiting**
+- [ ] **Single-zone limitation.** `TrajectoryPostProcessing`/`ExtendedMessengers` track one representative mass coordinate through ReacNetJl, not the whole envelope — this is why the ²²Na/²⁶Al freeze-out gamma-ray lines currently integrate to ~0 in this run's saved window (the tracked zone never becomes locally transparent, even though the outer envelope does). Fixing this for real needs either a MESA run that resolves full homologous ejection, or an explicit model for how freeze-out isotopes get transported to the transparent outer layers.
+- [ ] **Shock parameters are only partially calibrated from this run.** `calibrate_shock_params` derives the white dwarf mass, envelope mass, and ejecta velocity from MESA's own data, but the ejection timescale (`tau_days`) and the shock microphysics efficiencies (`xiCR`, `xiB`, `fX`, `kappa`, `fOmega`) are still the paper's fiducial literature values, since `wd_nova_burst_co` doesn't resolve the actual mass-ejection event.
+- [ ] **Companion is a generic placeholder** (`PlanckSource(4000K, 3e10cm)` in `spectrum_movie.jl`) — swap in real parameters once a specific system is chosen to model.
+- [ ] **²⁶Al isomer (`al*6`) not tracked.** Negligible in this run's own ReacNetJl output (~1e-16 vs ~1e-6 for the ground state) and its name doesn't fit the isotope-name parsing convention (`mass_number`) without a dedicated exception — low priority unless a future run makes it non-negligible.
 
-- `~/mesa-25.12.1/data/rates_data/weak_info.list` — authoritative half-life/
-  Qneu source for `NuclearDecay`
-- `~/mesa-25.12.1/star/test_suite/wd_nova_burst/history_columns.list` and
-  `profile_columns.list` — files to copy and edit for Phase 0
-- `mesa_work/wd_nova_burst_co/profile_columns.list` — where the ne18
-  `screened_rate r_f17_pg_ne18` column is enabled
-- `mesa_work/wd_nova_burst_co/make/makefile` — `LOAD_EXTRAS` link workaround
-  for this host's SDK/X11 linking (see below)
-- `NovaMessengers/src/MesaIO.jl` — Phase 1 reader everything downstream
-  depends on
-- `NovaMessengers/src/NuclearDecay.jl` — Phase 2 decay-data anchor
+**Housekeeping**
+- [ ] `examples/reaction_energetics_check.jl` vs. `examples/reaction_energetics_crosscheck.jl`, and `examples/shock_model_validation.jl` vs. `examples/shock_spectrum_validation.jl` — similarly-named example files that were never confirmed to be intentionally distinct (model-level vs. spectrum-level checks look likely) rather than leftover duplication. Quick review, not urgent.
+- [ ] `examples/spectrum_movie.jl`'s companion/shock/dust choices are all currently hardcoded constants at the top of the script — fine for one system, but worth turning into named presets (or CLI arguments) once more than one nova scenario is being modeled.

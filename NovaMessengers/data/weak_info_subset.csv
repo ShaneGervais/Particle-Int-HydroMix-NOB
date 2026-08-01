@@ -1,8 +1,8 @@
-isotope,daughter,halflife_s,q_neu_mev,mode
-n13,c13,597.9,0.706,beta+
-o14,n14,70.64,2.22,beta+
-o15,n15,122.24,0.9964,beta+
-f17,o17,67.11588,1.013221,beta+
-f18,o18,7109.281,0.5561278,beta+
-ne18,f18,1.733107,1.842163,beta+
-ne19,f19,18.02293,1.262242,beta+
+isotope,daughter,halflife_s,q_neu_mev,mode,positron_branching,gamma_line_mev,gamma_branching
+n13,c13,597.9,0.706,beta+,1.0,0.0,0.0
+o14,n14,70.64,2.22,beta+,1.0,0.0,0.0
+o15,n15,122.24,0.9964,beta+,1.0,0.0,0.0
+f17,o17,67.11588,1.013221,beta+,1.0,0.0,0.0
+f18,o18,7109.281,0.5561278,beta+,1.0,0.0,0.0
+ne18,f18,1.733107,1.842163,beta+,1.0,0.0,0.0
+ne19,f19,18.02293,1.262242,beta+,1.0,0.0,0.0

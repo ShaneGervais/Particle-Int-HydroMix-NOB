@@ -1,8 +1,9 @@
 module ShockAcceleration
 
 using ..Transport: ELECTRON_REST_ENERGY_MEV
+using ..MesaIO
 
-export ShockModelParams,
+export ShockModelParams, calibrate_shock_params,
        wind_mass_loss_rate, wind_velocity, shell_mass, shell_velocity, shock_velocity,
        shock_radius, shock_power, shock_temperature, postshock_density, shell_temperature,
        column_density, shell_density,
@@ -12,7 +13,9 @@ export ShockModelParams,
        max_proton_energy_gev, max_proton_energy_gev_closedform,
        proton_spectrum, gamma_ray_spectrum,
        bethe_heitler_cross_section, bethe_heitler_optical_depth,
-       optical_radiation_energy_density, gamma_gamma_optical_depth
+       optical_radiation_energy_density, gamma_gamma_optical_depth,
+       bremsstrahlung_emissivity_nu, shock_bremsstrahlung_luminosity_nu,
+       shock_bremsstrahlung_luminosity_ev
 
 # Physical constants (cgs). MSUN_G matches this project's own MESA run's
 # header `msun` value (frozen-from-MESA principle, same as elsewhere in
@@ -26,6 +29,7 @@ const ELEMENTARY_CHARGE_ESU = 4.80320425e-10   # esu (Gaussian-cgs)
 const GEV_TO_ERG = 1.602176634e-3              # exact (2019 SI elementary charge)
 const DAY_S = 86400.0
 const KM_S_TO_CM_S = 1.0e5
+const G_CGS = 6.67430e-8                       # cm^3 g^-1 s^-2 (CODATA)
 
 # Model-specific constants, given explicitly in Diesing & Metzger (2026),
 # "A Unified Model for Shock Interaction and gamma-Ray Emission in
@@ -97,6 +101,65 @@ function ShockModelParams(;
     return ShockModelParams(
         Menv_Msun * MSUN_G, tau_days * DAY_S, vf_km_s * KM_S_TO_CM_S,
         fX, delta_s_over_Rs, fOmega, xiCR, xiB, kappa, Mwd_Msun * MSUN_G,
+    )
+end
+
+"""
+    calibrate_shock_params(run::MesaRun; ignition_mass_coordinate, tau_days=20.0,
+                            fX=5e-5, delta_s_over_Rs=1e-2, fOmega=0.3, xiCR=0.03,
+                            xiB=0.01, kappa=0.1, history_row=1) -> ShockModelParams
+
+Builds [`ShockModelParams`](@ref) with `Mwd_Msun`, `Menv_Msun`, and
+`vf_km_s` set from this run's own MESA data instead of Diesing &
+Metzger's fiducial defaults:
+
+    Mwd_Msun  = star_mass(history_row)
+    Menv_Msun = max(Mwd_Msun - ignition_mass_coordinate, 0.0)
+    vf_km_s   = sqrt(2 G Mwd_g / R_cm) / KM_S_TO_CM_S      (surface escape velocity)
+
+- `Mwd_Msun`: this run's own WD mass, at `history_row` (default 1,
+  pre-TNR).
+- `Menv_Msun`: the mass of material *above* wherever the TNR actually
+  ignites is the natural proxy for "how much envelope this event could
+  plausibly eject" -- everything below that depth is unburned WD
+  substrate, not part of the flash. Pass
+  `TrajectoryPostProcessing.peak_temperature_zone(run).mass_coordinate`
+  for `ignition_mass_coordinate`.
+- `vf_km_s`: real nova ejecta velocities are observed to scale with the
+  underlying WD's escape velocity (more compact/massive WDs -> faster
+  ejecta), so the WD's own surface escape velocity is a physically
+  motivated anchor, not an arbitrary substitute for the paper's
+  literature-typical 6000 km/s.
+
+`tau_days`/`fX`/`delta_s_over_Rs`/`fOmega`/`xiCR`/`xiB`/`kappa` remain
+fiducial (paper defaults, overridable via keyword) -- nothing in a
+single-zone TNR run informs the ejection *timescale* or the shock
+microphysics efficiencies, so this is a partial calibration, not a full
+replacement for an actual MESA-resolved ejection run (see this module's
+own struct docstring for why `wd_nova_burst_co` can't supply that).
+"""
+function calibrate_shock_params(run::MesaRun; ignition_mass_coordinate::Real,
+    tau_days::Real=20.0, fX::Real=5e-5, delta_s_over_Rs::Real=1e-2, fOmega::Real=0.3,
+    xiCR::Real=0.03, xiB::Real=0.01, kappa::Real=0.1, history_row::Integer=1)
+    h = history(run).data
+    # Use the run's own maximum recorded mass, not history_row's, for the
+    # Menv subtraction: star_mass grows slightly over the run (ongoing
+    # accretion), so a mass_coordinate measured from a *later* profile
+    # (as peak_temperature_zone's typically is) can exceed an earlier
+    # history_row's star_mass, making Menv spuriously clamp to zero --
+    # confirmed: this produced Menv=0 -> wind_mass_loss_rate=0 ->
+    # radiative_cooling_length_ratio=Inf (division by zero) ->
+    # downstream_thickness=Inf -> a 0*Inf = NaN bremsstrahlung volume.
+    Mwd_Msun = maximum(h.star_mass)
+    Menv_Msun = max(Mwd_Msun - ignition_mass_coordinate, 0.0)
+    R_cm = h.radius_cm[history_row]
+    Mwd_g = Mwd_Msun * MSUN_G
+    v_esc_cm_s = sqrt(2 * G_CGS * Mwd_g / R_cm)
+    vf_km_s = v_esc_cm_s / KM_S_TO_CM_S
+    return ShockModelParams(;
+        Menv_Msun=Menv_Msun, tau_days=tau_days, vf_km_s=vf_km_s,
+        fX=fX, delta_s_over_Rs=delta_s_over_Rs, fOmega=fOmega,
+        xiCR=xiCR, xiB=xiB, kappa=kappa, Mwd_Msun=Mwd_Msun,
     )
 end
 
@@ -533,6 +596,73 @@ function gamma_gamma_optical_depth(p::ShockModelParams, t::Real, Eg_gev::Real)
     n_seed = optical_radiation_energy_density(p, t) / Eopt_erg
     sigma_gg = SIGMA_T_CM2 / 4
     return n_seed * shock_radius(p, t) * sigma_gg
+end
+
+# --- Thermal bremsstrahlung (shock-heated plasma continuum) -----------------
+
+const H_ERG_S = 6.62607015e-27     # erg s (exact, 2019 SI) -- Planck constant
+const EV_TO_ERG = 1.602176634e-12  # erg/eV (exact)
+const GAUNT_FACTOR = 1.2           # order-unity thermal-averaged Gaunt factor, standard approximation
+
+"""
+    bremsstrahlung_emissivity_nu(n_e, n_i, T, nu; Z=1) -> erg/s/cm^3/Hz
+
+Thermal (free-free) volume emissivity at frequency `nu` (Hz) from a fully
+ionized plasma of electron density `n_e`, ion density `n_i` (cm^-3), and
+temperature `T` (K):
+
+    epsilon_ff(nu) = 6.8e-38 * Z^2 * n_e * n_i * T^(-1/2) * exp(-h*nu/(k T)) * g_ff
+
+(Rybicki & Lightman's standard cgs thermal bremsstrahlung emissivity; the
+`6.8e-38` coefficient already has the frequency-independent physical
+constants folded in). `g_ff` is the frequency/temperature-averaged Gaunt
+factor, taken as a fixed `GAUNT_FACTOR=1.2` (order-unity correction,
+standard simplification -- not resolved as a function of `nu`/`T` here).
+"""
+function bremsstrahlung_emissivity_nu(n_e::Real, n_i::Real, T::Real, nu::Real; Z::Real=1)
+    return 6.8e-38 * Z^2 * n_e * n_i * T^-0.5 * exp(-H_ERG_S * nu / (BOLTZMANN_ERG_K * T)) * GAUNT_FACTOR
+end
+
+"""
+    shock_bremsstrahlung_luminosity_nu(p, t, nu) -> erg/s/Hz
+
+Thermal bremsstrahlung spectral luminosity from the hot, shock-heated
+downstream layer (NOT the cool pre-shock shell -- bremsstrahlung needs
+the ~1e7-1e9 K post-shock gas, which sits in a thin layer of thickness
+[`downstream_thickness`](@ref) just behind the shock, at
+[`postshock_density`](@ref)/[`shock_temperature`](@ref)):
+
+    n_e = n_i = postshock_density(p,t) / m_p            (fully ionized H, Z=1)
+    V   = 4 pi Rs^2 * downstream_thickness(p,t)           (thin-shell volume)
+    L_nu(nu) = bremsstrahlung_emissivity_nu(n_e, n_i, Tsh, nu) * V
+
+This is the "hard X-ray" channel flagged in the project's own messenger
+decoder table as `shock_temperature` being computed but not yet turned
+into an actual luminosity -- this closes that gap.
+"""
+function shock_bremsstrahlung_luminosity_nu(p::ShockModelParams, t::Real, nu::Real)
+    n = postshock_density(p, t) / PROTON_MASS_G
+    V = 4 * pi * shock_radius(p, t)^2 * downstream_thickness(p, t)
+    Tsh = shock_temperature(p, t)
+    return bremsstrahlung_emissivity_nu(n, n, Tsh, nu) * V
+end
+
+"""
+    shock_bremsstrahlung_luminosity_ev(p, t, E_ev) -> erg/s/eV
+
+Same as [`shock_bremsstrahlung_luminosity_nu`](@ref), converted to
+spectral luminosity per unit photon energy (eV) via `nu = E/h`:
+
+    L_E(E) = L_nu(E/h) / h * EV_TO_ERG
+
+the natural unit for compositing this channel into a spectrum alongside
+[`QuiescentContinuum.spectral_luminosity_ev`](@ref).
+"""
+function shock_bremsstrahlung_luminosity_ev(p::ShockModelParams, t::Real, E_ev::Real)
+    E_erg = E_ev * EV_TO_ERG
+    nu = E_erg / H_ERG_S
+    L_nu = shock_bremsstrahlung_luminosity_nu(p, t, nu)
+    return L_nu / H_ERG_S * EV_TO_ERG
 end
 
 end # module ShockAcceleration

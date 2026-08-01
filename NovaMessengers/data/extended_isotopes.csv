@@ -1,0 +1,4 @@
+isotope,daughter,halflife_s,q_neu_mev,mode,positron_branching,gamma_line_mev,gamma_branching
+na22,ne22,82120100.0,0.93,mixed,0.90,1.27453,0.9994
+al26,mg26,22627000000000.0,1.17,mixed,0.82,1.80873,0.9976
+be7,li7,4598208.0,0.81,electron_capture,0.0,0.4776,0.104

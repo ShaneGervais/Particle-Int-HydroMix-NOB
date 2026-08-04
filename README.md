@@ -57,15 +57,11 @@ Most of what NovaMessengers tracks comes from unstable isotopes made during the 
 
 The number of undecayed nuclei falls off exponentially:
 
-```
-N(t) = N0 * exp(-lambda * t)          lambda = ln(2) / half-life
-```
+$$N(t) = N_0 \, e^{-\lambda t}, \qquad \lambda = \frac{\ln 2}{t_{1/2}}$$
 
 so the rate of decays (= the rate of messenger emission) at any instant is just:
 
-```
-decay_rate(t) = lambda * N(t)
-```
+$$R_{\text{decay}}(t) = \lambda \, N(t)$$
 
 Two isotopes matter differently here: ⁷Be decays purely by *electron capture* — no positron at all, so it contributes zero to the 511 keV line, only to the neutrino signal and a weak 478 keV gamma line. ²²Na and ²⁶Al are a mix of positron decay and electron capture. The code tracks each isotope's `positron_branching` and `gamma_branching` explicitly rather than assuming "one positron per decay" for everything.
 
@@ -75,9 +71,7 @@ Two isotopes matter differently here: ⁷Be decays purely by *electron capture* 
 
 A neutrino's mean free path through the star is enormously larger than the star itself, so:
 
-```
-P_escape(neutrino) = 1, always
-```
+$$P_{\text{escape}}(\nu) = 1 \quad \text{always}$$
 
 Whatever rate of neutrinos gets produced *is* exactly the rate an observer would see (if anyone could actually build a detector sensitive enough — in reality nobody can, for a nova this far away, but it's the perfect "ground truth" signal to compare everything else against). No other messenger in this project has that property.
 
@@ -87,17 +81,15 @@ Whatever rate of neutrinos gets produced *is* exactly the rate an observer would
 
 Unlike neutrinos, gamma-ray photons *do* interact with the gas around them — mostly through Compton scattering off electrons. The probability a photon born at some depth actually escapes depends on how much material is between it and the surface:
 
-```
-tau(zone) = integral of (density * opacity) from that zone out to the surface
-P_escape(zone) = exp(-tau(zone))
-```
+$$\tau(\text{zone}) = \int \rho \, \kappa \; dr \quad \text{(from that zone out to the surface)}$$
+
+$$P_{\text{escape}}(\text{zone}) = e^{-\tau(\text{zone})}$$
 
 The opacity itself depends on photon energy through the Klein-Nishina formula (the quantum-mechanically correct version of Compton scattering, which becomes energy-dependent above ~511 keV):
 
-```
-kappa(E) = kappa_Thomson * [sigma_KN(E) / sigma_Thomson]
-kappa_Thomson = 0.2 * (1 + X)      (X = hydrogen mass fraction)
-```
+$$\kappa(E) = \kappa_{\text{Thomson}} \cdot \frac{\sigma_{KN}(E)}{\sigma_T}, \qquad \kappa_{\text{Thomson}} = 0.2\,(1 + X)$$
+
+where $X$ is the hydrogen mass fraction.
 
 This is why a 511 keV line and a 1.275 MeV line, produced at the same depth, don't escape with the same probability, and why gamma-ray lines characteristically switch on late — only once the ejecta has expanded and thinned out enough for `tau` to drop below 1.
 
@@ -107,10 +99,9 @@ This is why a 511 keV line and a 1.275 MeV line, produced at the same depth, don
 
 Both the white dwarf and its companion star emit light because they're hot, the same way a hot piece of metal glows. That's blackbody (Planck) radiation:
 
-```
-B_nu(T) = (2 h nu^3 / c^2) / (exp(h nu / kT) - 1)      (energy per area per solid angle per frequency)
-L_E(E)  = 8 pi^2 R^2 E^3 / (h^3 c^2 [exp(E/kT) - 1])   (converted to energy per second per unit photon energy)
-```
+$$B_\nu(T) = \frac{2h\nu^3/c^2}{e^{h\nu/kT} - 1} \quad \text{(energy per area per solid angle per frequency)}$$
+
+$$L_E(E) = \frac{8\pi^2 R^2 E^3}{h^3 c^2 \left(e^{E/kT} - 1\right)} \quad \text{(converted to energy per second per unit photon energy)}$$
 
 The remarkable thing is that MESA's own simulation already tracks the white dwarf's temperature and radius through the *entire* event — quiescent (~30,000 K), then swelling and cooling during the explosion, then shrinking back down to a small, extremely hot state afterward (this run reaches over 600,000 K) that's actually the physical origin of the observed "supersoft X-ray" phase real novae show. One formula, sampled at different times, covers four different phases of the nova's life.
 
@@ -120,19 +111,19 @@ The remarkable thing is that MESA's own simulation already tracks the white dwar
 
 A nova doesn't eject its material in one smooth puff. A slower shell leaves first; a faster wind follows and catches up to it. Where they collide, a shock forms, and shocks can accelerate a small fraction of particles to very high energies — completely unrelated to the nuclear burning that made the isotopes above. This project uses a published model (Diesing & Metzger 2026 — see references) for that shock physics. A few of the key relationships:
 
-```
-wind mass-loss rate:   Mdot_w(t) = (M_env / tau) * exp(-t/tau)
-shock velocity:        v_sh = v_wind / 2   (momentum-conserving collision)
-shock temperature:     T_sh = (3 * m_proton / 16 k_B) * v_sh^2
-cosmic-ray luminosity: L_CR = xi_CR * L_shock
-gamma-ray luminosity:  L_gamma ~= f_Omega * xi_CR * kappa * L_shock   (calorimetric limit)
-```
+$$\text{wind mass-loss rate:} \quad \dot{M}_w(t) = \frac{M_{\text{env}}}{\tau}\,e^{-t/\tau}$$
+
+$$\text{shock velocity:} \quad v_{\text{sh}} = \frac{v_{\text{wind}}}{2} \quad \text{(momentum-conserving collision)}$$
+
+$$\text{shock temperature:} \quad T_{\text{sh}} = \frac{3\,m_p}{16\,k_B}\,v_{\text{sh}}^2$$
+
+$$\text{cosmic-ray luminosity:} \quad L_{\text{CR}} = \xi_{\text{CR}}\, L_{\text{shock}}$$
+
+$$\text{gamma-ray luminosity:} \quad L_\gamma \approx f_\Omega\, \xi_{\text{CR}}\, \kappa\, L_{\text{shock}} \quad \text{(calorimetric limit)}$$
 
 The accelerated protons collide with other protons in the shocked gas and produce pions, which decay into the GeV gamma-rays real nova telescopes (like Fermi-LAT) actually detect. The same hot, shocked gas also glows via ordinary thermal bremsstrahlung ("braking radiation" from electrons deflected by ions):
 
-```
-bremsstrahlung emissivity:  epsilon_ff(nu) = 6.8e-38 * Z^2 * n_e * n_i * T^(-1/2) * exp(-h*nu/kT) * gaunt_factor
-```
+$$\varepsilon_{ff}(\nu) = 6.8\times10^{-38} \; Z^2\, n_e\, n_i\, T^{-1/2}\, e^{-h\nu/kT} \, \bar{g}_{ff}$$
 
 *Code:* `ShockAcceleration.jl` — every equation in this module cites its equation number from the source paper directly in the code comments, so cross-referencing is straightforward.
 
@@ -140,9 +131,7 @@ bremsstrahlung emissivity:  epsilon_ff(nu) = 6.8e-38 * Z^2 * n_e * n_i * T^(-1/2
 
 Each nuclear reaction releases (or, rarely, absorbs) a specific amount of energy, computed from the difference in nuclear mass between what goes in and what comes out:
 
-```
-Q = (mass of reactants) - (mass of products)     [converted to energy via E=mc^2]
-```
+$$Q = \left(\sum m_{\text{reactants}} - \sum m_{\text{products}}\right) c^2$$
 
 This is used mainly as a cross-check: sum up the energy released by every tracked reaction, zone by zone, and it should account for a specific (traceable) fraction of the total nuclear energy generation MESA reports on its own.
 
